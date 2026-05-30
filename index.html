@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keystone + Unicorn round-trip (AArch64, in-browser)</title>
+<style>
+  body { font-family: ui-monospace, monospace; margin: 2rem; max-width: 60rem; }
+  pre  { background: #111; color: #eee; padding: 1rem; border-radius: 6px;
+         white-space: pre-wrap; word-break: break-word; }
+  .ok  { color: #2ecc40; font-weight: bold; }
+  .err { color: #ff4136; font-weight: bold; }
+  h1   { font-size: 1.1rem; }
+</style>
+</head>
+<body>
+<h1>Assemble (Keystone) &rarr; Emulate (Unicorn) &mdash; AArch64, no backend</h1>
+<pre id="log">loading engines…</pre>
+
+<!-- Both are self-contained asm.js Emscripten builds that expose the globals
+     `ks` and `uc` synchronously. No bundler, no fetch, no backend. -->
+<script src="vendor/keystone.min.js"></script>
+<script src="vendor/unicorn-aarch64.min.js"></script>
+<script>
+(function () {
+  var el = document.getElementById('log');
+  var lines = [];
+  function log(s) { lines.push(s); el.textContent = lines.join('\n'); }
+
+  var PROGRAM = 'mov x0, #42\nsvc #0';
+  var BASE = 0x10000;
+
+  try {
+    if (typeof ks === 'undefined') throw new Error('Keystone (ks) failed to load');
+    if (typeof uc === 'undefined') throw new Error('Unicorn (uc) failed to load');
+    log('Engines loaded.');
+    log('Program:\n  ' + PROGRAM.replace('\n', '\n  '));
+
+    // 1 + 2. Assemble with Keystone (AArch64, little-endian).
+    var ksCtx = new ks.Keystone(ks.ARCH_ARM64, ks.MODE_LITTLE_ENDIAN);
+    var out = ksCtx.asm(PROGRAM, BASE);
+    ksCtx.close();
+    if (out.failed) throw new Error('Keystone failed to assemble the program');
+    var code = Array.prototype.slice.call(out.mc);
+    var hex = code.map(function (b) {
+      return ('0' + (b & 0xff).toString(16)).slice(-2);
+    }).join(' ');
+    log('Keystone: ' + out.count + ' insns, ' + code.length + ' bytes: ' + hex);
+
+    // 3. Map memory, write the bytes at BASE (PC starts there via emu_start).
+    var e = new uc.Unicorn(uc.ARCH_ARM64, uc.MODE_ARM);
+    e.mem_map(BASE, 4 * 1024, uc.PROT_ALL);
+    e.mem_write(BASE, code);
+
+    // 4. Interrupt hook: catch the `svc` and stop the CPU.
+    var svcFired = false, svcIntno = null;
+    e.hook_add(uc.HOOK_INTR, function (handle, intno) {
+      svcFired = true;
+      svcIntno = intno;
+      handle.emu_stop();
+    }, {}, BASE, BASE + code.length);
+
+    // 5. Run, then read X0 back.
+    e.emu_start(BASE, BASE + code.length, 0, 0);
+    var x0 = e.reg_read_i64(uc.ARM64_REG_X0);
+    e.close();
+
+    log('Unicorn: svc hook fired = ' + svcFired + ' (intno=' + svcIntno + ')');
+    log('Unicorn: X0 = ' + x0);
+
+    // 6. Eyeball success criterion.
+    if (svcFired && x0 === 42) {
+      log('');
+      var ok = document.createElement('div');
+      ok.className = 'ok';
+      ok.textContent = 'PASS — x0 == 42 and the svc hook fired.';
+      document.body.appendChild(ok);
+    } else {
+      throw new Error('Unexpected result (svcFired=' + svcFired + ', x0=' + x0 + ')');
+    }
+  } catch (err) {
+    log('');
+    var bad = document.createElement('div');
+    bad.className = 'err';
+    bad.textContent = 'FAIL — ' + (err && err.message ? err.message : err);
+    document.body.appendChild(bad);
+    if (window.console) console.error(err);
+  }
+})();
+</script>
+</body>
+</html>
