@@ -1,9 +1,13 @@
 # RAMON
-R - Real
-A - Actual
-M - Meow
-O - CPU
-N - Emulator for teaching
+**R** - Real
+
+**A** - Actual
+
+**M** - Meow
+
+**O** - CPU
+
+**N** - Emulator for teaching
 
 ## Description
 cpu-emulator — Keystone + Unicorn AArch64 round-trip (in-browser)
