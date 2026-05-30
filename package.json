@@ -2,13 +2,19 @@
   "name": "cpu-emulator",
   "version": "1.0.0",
   "private": true,
-  "description": "In-browser AArch64 assemble (Keystone) + emulate (Unicorn) round-trip, proven headlessly under Node.",
+  "type": "module",
+  "description": "In-browser AArch64 assembly learning environment: assemble (Keystone WASM) + emulate (Unicorn asm.js), client-side only.",
   "scripts": {
-    "test": "node verify.js && node verify-keystone-wasm.js && node verify-wasm.js",
-    "build": "node build.js",
-    "serve": "node serve.js"
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "proof": "tsx scripts/headless-proof.ts",
+    "spike:test": "node verify.js && node verify-keystone-wasm.js && node verify-wasm.js"
   },
-  "dependencies": {
-    "serve-handler": "^6.1.7"
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
   }
 }
