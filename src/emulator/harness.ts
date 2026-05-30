@@ -5,6 +5,7 @@
 
 import { Keystone } from '../engine/keystone.ts';
 import type { KeystoneModule } from '../engine/keystone.ts';
+import { readRegExact } from '../engine/unicorn.ts';
 import type { UnicornInstance, UnicornNamespace } from '../engine/unicorn.ts';
 import type { ArchProfile, SourceMap, SyscallContext } from '../arch/ArchProfile.ts';
 import type { MemoryWindow, Snapshot, StopReason } from './protocol.ts';
@@ -200,9 +201,10 @@ export class EmulatorHarness {
       };
     }
 
+    // Exact 64-bit values (reg_read_i64 loses precision above 2^53).
     const registers = profile.registers.map((r) => ({
       name: r.name,
-      value: cpu.reg_read_i64(r.regId),
+      value: readRegExact(cpu, r.regId),
     }));
 
     let flags: Record<string, 0 | 1> | null = null;

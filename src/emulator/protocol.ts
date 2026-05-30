@@ -4,8 +4,8 @@
 
 export interface RegisterValue {
   name: string;
-  /** Raw value as read from Unicorn (JS number; >2^53 loses precision — see README). */
-  value: number;
+  /** Exact unsigned 64-bit value (read as raw bytes -> BigInt; structured-cloneable). */
+  value: bigint;
 }
 
 export interface MemoryWindow {

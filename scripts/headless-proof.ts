@@ -46,7 +46,7 @@ async function main() {
   const x0 = ran.registers.find((r) => r.name === 'x0')?.value;
   console.log(`x0=${x0}  pc=0x${ran.pc.toString(16)}  flags=${JSON.stringify(ran.flags)}`);
 
-  const runOk = ran.stopReason === 'exit' && ran.halted && ran.exitCode === 0 && ran.console === 'Hi\n';
+  const runOk = ran.stopReason === 'exit' && ran.halted && ran.exitCode === 0 && ran.console === 'Hi\n' && x0 === 0n;
   if (!runOk) fail(`unexpected run result (console=${JSON.stringify(ran.console)})`);
 
   // --- STEP through, watching the current line + a register advance ---
@@ -59,8 +59,8 @@ async function main() {
     const snap = harness.step();
     steps++;
     const lineText = snap.line !== null ? lines[snap.line].trim() : '(no line)';
-    const x9 = snap.registers.find((r) => r.name === 'x9')?.value ?? 0;
-    if (x9 === 0x000a6948) sawX9 = true;
+    const x9 = snap.registers.find((r) => r.name === 'x9')?.value ?? 0n;
+    if (x9 === 0x000a6948n) sawX9 = true;
     console.log(
       `  step ${String(steps).padStart(2)}: pc=0x${snap.pc.toString(16)} line=${snap.line} "${lineText}" x9=0x${x9.toString(16)}`,
     );

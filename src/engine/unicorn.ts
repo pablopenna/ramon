@@ -11,9 +11,13 @@ export interface UnicornInstance {
   mem_write(addr: number, bytes: ArrayLike<number>): void;
   /** Returns the bytes as a Uint8Array. */
   mem_read(addr: number, len: number): Uint8Array;
-  /** i64 register read/write use plain JS numbers (NOT BigInt) in this build. */
+  /** i64 register read/write use plain JS numbers (NOT BigInt) in this build.
+   *  Note reg_read_i64 sign-extends to a JS number and loses precision above
+   *  2^53 — use reg_read(regId, 8) + readRegExact() for exact 64-bit values. */
   reg_read_i64(regId: number): number;
   reg_write_i64(regId: number, value: number): void;
+  /** Generic read: reg_read(regId, sizeBytes) returns the raw little-endian bytes. */
+  reg_read(regId: number, size: number): Uint8Array;
   hook_add(type: number, callback: IntrHook, userData: unknown, begin: number, end: number): number;
   hook_del(handle: number): void;
   /** emu_start(begin, until, timeoutMicros, instructionCount). count/timeout 0 = unlimited. */
@@ -44,4 +48,18 @@ export interface UnicornNamespace {
 
   // Register ids (a subset; the build exposes the full ARM64_REG_* set).
   [key: `ARM64_REG_${string}`]: number;
+}
+
+/**
+ * Read a register as an exact unsigned 64-bit value (BigInt), avoiding the
+ * precision loss of reg_read_i64. reg_read(regId, 8) returns 8 little-endian
+ * bytes; we recombine them into a BigInt.
+ */
+export function readRegExact(cpu: UnicornInstance, regId: number): bigint {
+  const bytes = cpu.reg_read(regId, 8);
+  let v = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) {
+    v = (v << 8n) | BigInt(bytes[i]);
+  }
+  return v;
 }
