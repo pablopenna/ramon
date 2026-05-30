@@ -129,6 +129,25 @@ main {
   white-space: pre-wrap;
 }
 
+.asm-error-headline {
+  font-weight: 600;
+}
+
+.asm-error-line {
+  margin-top: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  background: rgba(248, 81, 73, 0.18);
+  border-left: 2px solid var(--err);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.asm-error-hint {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
 #editor {
   flex: 1;
   min-height: 0;
@@ -143,6 +162,10 @@ main {
 
 .cm-execLine {
   background: rgba(47, 129, 247, 0.22) !important;
+}
+
+.cm-errorLine {
+  background: rgba(248, 81, 73, 0.2) !important;
 }
 
 /* Panels on the right */

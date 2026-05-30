@@ -48,7 +48,9 @@ const el = {
 
 const editor = new SourceEditor(el.editor, DEFAULT_PROGRAM, {
   onChange: () => {
-    // Editing invalidates the loaded program; require a re-assemble.
+    // Editing invalidates a shown assembler error and any loaded program;
+    // require a re-assemble either way.
+    if (!el.asmError.hidden) clearAsmError();
     if (state.loaded) markStale();
   },
 });
@@ -139,8 +141,11 @@ function handleResponse(msg: WorkerResponse): void {
     case 'assemble-error':
       state.loaded = false;
       finishRequest();
-      showAsmError(msg.error);
-      setStatus('Assemble failed.', 'error');
+      showAsmError(msg);
+      setStatus(
+        msg.line === undefined ? 'Assemble failed.' : `Assemble failed at line ${msg.line + 1}.`,
+        'error',
+      );
       break;
     case 'state': {
       const resetDiff = pendingReset;
@@ -249,14 +254,43 @@ function setStatus(text: string, kind: 'ok' | 'warn' | 'error'): void {
   el.status.className = `status status-${kind}`;
 }
 
-function showAsmError(message: string): void {
-  el.asmError.textContent = message;
+type AssembleError = Extract<WorkerResponse, { type: 'assemble-error' }>;
+
+function showAsmError(msg: AssembleError): void {
+  const frag = document.createDocumentFragment();
+
+  const headline = document.createElement('div');
+  headline.className = 'asm-error-headline';
+  headline.textContent =
+    msg.line === undefined
+      ? `Assembler error: ${msg.error}`
+      : `Line ${msg.line + 1}: ${msg.error}`;
+  frag.append(headline);
+
+  // Echo the offending source line so the problem is visible without scanning.
+  if (msg.lineText) {
+    const code = document.createElement('div');
+    code.className = 'asm-error-line';
+    code.textContent = msg.lineText;
+    frag.append(code);
+  }
+
+  if (msg.hint) {
+    const hint = document.createElement('div');
+    hint.className = 'asm-error-hint';
+    hint.textContent = msg.hint;
+    frag.append(hint);
+  }
+
+  el.asmError.replaceChildren(frag);
   el.asmError.hidden = false;
+  editor.highlightErrorLine(msg.line ?? null);
 }
 
 function clearAsmError(): void {
-  el.asmError.textContent = '';
+  el.asmError.replaceChildren();
   el.asmError.hidden = true;
+  editor.highlightErrorLine(null);
 }
 
 function markStale(): void {

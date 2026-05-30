@@ -9,34 +9,39 @@ import { Decoration, type DecorationSet } from '@codemirror/view';
 
 /** Effect carrying the 0-based line to highlight, or null to clear. */
 const setActiveLine = StateEffect.define<number | null>();
+/** Effect carrying the 0-based line of an assembler error, or null to clear. */
+const setErrorLine = StateEffect.define<number | null>();
 
-const activeLineDeco = Decoration.line({ class: 'cm-execLine' });
+/** Build a single-line decoration field driven by `effect`. */
+function lineHighlightField(
+  effect: typeof setActiveLine,
+  className: string,
+): StateField<DecorationSet> {
+  const deco = Decoration.line({ class: className });
+  return StateField.define<DecorationSet>({
+    create() {
+      return Decoration.none;
+    },
+    update(set, tr) {
+      set = set.map(tr.changes);
+      for (const e of tr.effects) {
+        if (!e.is(effect)) continue;
+        const zeroBased = e.value;
+        const lineNo = zeroBased === null ? 0 : zeroBased + 1; // CodeMirror lines are 1-based.
+        if (lineNo >= 1 && lineNo <= tr.state.doc.lines) {
+          set = Decoration.set([deco.range(tr.state.doc.line(lineNo).from)]);
+        } else {
+          set = Decoration.none;
+        }
+      }
+      return set;
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
+}
 
-const activeLineField = StateField.define<DecorationSet>({
-  create() {
-    return Decoration.none;
-  },
-  update(deco, tr) {
-    deco = deco.map(tr.changes);
-    for (const effect of tr.effects) {
-      if (!effect.is(setActiveLine)) continue;
-      const zeroBased = effect.value;
-      if (zeroBased === null) {
-        deco = Decoration.none;
-        continue;
-      }
-      const lineNo = zeroBased + 1; // CodeMirror doc lines are 1-based.
-      if (lineNo >= 1 && lineNo <= tr.state.doc.lines) {
-        const line = tr.state.doc.line(lineNo);
-        deco = Decoration.set([activeLineDeco.range(line.from)]);
-      } else {
-        deco = Decoration.none;
-      }
-    }
-    return deco;
-  },
-  provide: (field) => EditorView.decorations.from(field),
-});
+const activeLineField = lineHighlightField(setActiveLine, 'cm-execLine');
+const errorLineField = lineHighlightField(setErrorLine, 'cm-errorLine');
 
 export class SourceEditor {
   private readonly view: EditorView;
@@ -49,7 +54,7 @@ export class SourceEditor {
       parent,
       state: EditorState.create({
         doc: initialDoc,
-        extensions: [basicSetup, activeLineField, listener, EditorView.lineWrapping],
+        extensions: [basicSetup, activeLineField, errorLineField, listener, EditorView.lineWrapping],
       }),
     });
   }
@@ -61,6 +66,11 @@ export class SourceEditor {
   /** Highlight the given 0-based source line (or clear with null). */
   highlightLine(zeroBased: number | null): void {
     this.view.dispatch({ effects: setActiveLine.of(zeroBased) });
+  }
+
+  /** Mark the given 0-based source line as an assembler error (or clear with null). */
+  highlightErrorLine(zeroBased: number | null): void {
+    this.view.dispatch({ effects: setErrorLine.of(zeroBased) });
   }
 
   focus(): void {
