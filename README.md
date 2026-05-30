@@ -1,4 +1,12 @@
-# cpu-emulator — Keystone + Unicorn AArch64 round-trip (in-browser)
+# RAMON
+R - Real
+A - Actual
+M - Meow
+O - CPU
+N - Emulator for teaching
+
+## Description
+cpu-emulator — Keystone + Unicorn AArch64 round-trip (in-browser)
 
 Toolchain validation: assemble and run ARM64 (AArch64) assembly entirely
 client-side — no backend, no native execution. Keystone assembles the text to
