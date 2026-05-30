@@ -8,6 +8,7 @@ import type { KeystoneModule } from '../engine/keystone.ts';
 import { readRegExact } from '../engine/unicorn.ts';
 import type { UnicornInstance, UnicornNamespace } from '../engine/unicorn.ts';
 import type { ArchProfile, SourceMap, SyscallContext } from '../arch/ArchProfile.ts';
+import { isInstructionLine } from './sourceMap.ts';
 import type { MemoryWindow, Snapshot, StopReason } from './protocol.ts';
 
 /** Default execution guard. The instruction-count cap is the ONLY in-engine
@@ -30,6 +31,12 @@ export interface LoadErr {
   ok: false;
   error: string;
   errno: number;
+  /** 0-based source line we pinned the failure to, when we could. */
+  line?: number;
+  /** The trimmed text of that line, for display. */
+  lineText?: string;
+  /** A short, plain-language hint about this class of error. */
+  hint?: string;
 }
 export type LoadResult = LoadOk | LoadErr;
 
@@ -66,7 +73,17 @@ export class EmulatorHarness {
   /** Assemble `source`, build a fresh CPU, and load the code. */
   load(source: string): LoadResult {
     const asm = this.ks.assemble(source, this.profile.memoryMap.code.base);
-    if (!asm.ok) return { ok: false, error: asm.error, errno: asm.errno };
+    if (!asm.ok) {
+      const located = this.locateAssembleError(source);
+      return {
+        ok: false,
+        error: asm.error,
+        errno: asm.errno,
+        line: located?.line,
+        lineText: located?.text,
+        hint: assembleHint(asm.error),
+      };
+    }
 
     this.reset(); // tear down any previous CPU + state
     this.source = source;
@@ -280,6 +297,44 @@ export class EmulatorHarness {
     );
   }
 
+  /**
+   * Best-effort: pin an assembler failure to a single source line by re-probing
+   * each instruction-bearing line on its own. Keystone reports a message but no
+   * location, so we assemble each line in isolation and report the first that
+   * fails. All label and `.equ`/`.set` definitions in the program are prepended
+   * to every probe so that forward references (e.g. `b loop`, `mov x0, #CONST`)
+   * still resolve and don't masquerade as the culprit. Returns null when no
+   * single line fails on its own (e.g. a duplicate label or a cross-line issue),
+   * in which case the caller falls back to the bare Keystone message.
+   */
+  private locateAssembleError(source: string): { line: number; text: string } | null {
+    const lines = source.split('\n');
+    const defs: string[] = [];
+    for (const raw of lines) {
+      const code = stripLineComment(raw);
+      const label = /^\s*([A-Za-z_.$][\w.$]*)\s*:/.exec(code);
+      if (label) defs.push(`${label[1]}:`);
+      const equ = /^\s*\.(?:equ|set)\s+([A-Za-z_.$][\w.$]*)\s*,\s*(.+)$/.exec(code);
+      if (equ) defs.push(`.equ ${equ[1]}, ${equ[2].trim()}`);
+    }
+    const prefix = defs.length ? defs.join('\n') + '\n' : '';
+    const base = this.profile.memoryMap.code.base;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (!isInstructionLine(lines[i])) continue;
+      // Strip the inline comment AND any leading label: Keystone silently
+      // assembles a bad instruction to 0 bytes when a trailing `//` comment is
+      // present (it returns OK), which would hide the very error we're hunting.
+      // Probing the bare instruction surfaces the failure. The leading label is
+      // dropped so the prefix's copy of it isn't a duplicate definition.
+      const instr = stripLineComment(lines[i]).replace(/^\s*[A-Za-z_.$][\w.$]*\s*:/, '');
+      if (!this.ks.assemble(prefix + instr, base).ok) {
+        return { line: i, text: lines[i].trim() };
+      }
+    }
+    return null;
+  }
+
   private handleRuntimeError(err: unknown): Snapshot {
     const message = err instanceof Error ? err.message : String(err);
     this.stopReason = 'error';
@@ -296,4 +351,36 @@ export class EmulatorHarness {
   private note(text: string): void {
     this.diagnostics.push(text);
   }
+}
+
+/** Strip `;` and `//` line comments (matches sourceMap's classification). */
+function stripLineComment(line: string): string {
+  let out = line;
+  for (const marker of [';', '//']) {
+    const idx = out.indexOf(marker);
+    if (idx !== -1) out = out.slice(0, idx);
+  }
+  return out;
+}
+
+/**
+ * A short, plain-language nudge keyed off the Keystone error text. These are
+ * the messages the ARM64 backend actually emits; the regexes are deliberately
+ * loose. Returns undefined when nothing specific applies (the raw message and
+ * the offending line already carry the detail).
+ */
+function assembleHint(error: string): string | undefined {
+  const msg = error.toLowerCase();
+  if (msg.includes('mnemonic') || msg.includes('instruction'))
+    return 'Check the instruction spelling — Keystone uses LLVM syntax, not GNU `as` syntax.';
+  if (msg.includes('operand'))
+    return 'Check the operands: register names (x0–x30, sp), addressing mode (e.g. [x0, #8]), and immediate syntax (#42, #0x2a).';
+  if (msg.includes('immediate') || msg.includes('range'))
+    return 'The immediate is out of range for this instruction — many ops cap immediates at 12 bits; build larger constants with mov/movk.';
+  if (msg.includes('symbol') || msg.includes('undefined'))
+    return 'A referenced label or symbol is undefined — check for a typo or a missing `label:` definition.';
+  // Keystone often reports a bare "Unknown error" for, e.g., an immediate the
+  // instruction can't encode. The pinned line tells the user where; this nudges
+  // them toward the usual cause.
+  return 'Keystone could not encode this line. Common causes: an immediate that is out of range for the instruction (build large constants with mov + movk), or an operand form the instruction does not accept.';
 }

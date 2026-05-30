@@ -76,6 +76,23 @@ async function main() {
   if (bad.ok) fail('expected an assemble error for a bad mnemonic');
   console.log(`\nAssemble-error path OK: "${bad.error}" (errno=${bad.errno})`);
 
+  // --- assemble error gets pinned to the right line, even past a forward branch ---
+  const BAD_PROGRAM = ['  b   done', '  mvo  x0, #1', 'done:', '  mov x8, #93', '  svc #0'].join('\n');
+  const located = harness.load(BAD_PROGRAM);
+  if (located.ok) fail('expected an assemble error for the bad mnemonic on line 2');
+  console.log(`Located error: line=${located.line} text="${located.lineText}" hint="${located.hint}"`);
+  if (located.line !== 1) fail(`expected the failure pinned to line index 1, got ${located.line}`);
+  if (located.lineText !== 'mvo  x0, #1') fail(`unexpected lineText: ${JSON.stringify(located.lineText)}`);
+
+  // --- out-of-range immediate WITH a trailing comment must still be pinned ---
+  // (Keystone assembles "bad-instr // comment" to 0 bytes + OK, which would
+  // hide the error unless the probe strips the comment first.)
+  const OOR = ['mov  x9, #0x69481   // too big for one mov', 'mov x8, #93', 'svc #0'].join('\n');
+  const oor = harness.load(OOR);
+  if (oor.ok) fail('expected an assemble error for an out-of-range immediate');
+  if (oor.line !== 0) fail(`out-of-range immediate not pinned to line 0 (got ${oor.line})`);
+  console.log(`Out-of-range immediate pinned: line=${oor.line} hint="${oor.hint}"`);
+
   harness.dispose();
   console.log('\nPASS: assembled, ran (console "Hi\\n", exit 0), single-stepped with line mapping, and reported an assemble error.');
 }

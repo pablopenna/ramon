@@ -38,7 +38,15 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
       case 'load': {
         const r = harness.load(req.source);
         if (r.ok) post({ type: 'loaded', bytes: r.bytes, count: r.count, snapshot: r.snapshot });
-        else post({ type: 'assemble-error', error: r.error, errno: r.errno });
+        else
+          post({
+            type: 'assemble-error',
+            error: r.error,
+            errno: r.errno,
+            line: r.line,
+            lineText: r.lineText,
+            hint: r.hint,
+          });
         break;
       }
       case 'step':

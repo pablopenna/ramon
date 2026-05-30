@@ -52,6 +52,16 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { type: 'ready' } // worker booted, engines loaded
   | { type: 'loaded'; bytes: number; count: number; snapshot: Snapshot } // assembled OK
-  | { type: 'assemble-error'; error: string; errno: number }
+  | {
+      type: 'assemble-error';
+      error: string;
+      errno: number;
+      /** 0-based source line we pinned the failure to, when we could. */
+      line?: number;
+      /** The trimmed text of that line, for display. */
+      lineText?: string;
+      /** A short, plain-language hint about this class of error. */
+      hint?: string;
+    }
   | { type: 'state'; snapshot: Snapshot } // after run/step/reset
   | { type: 'error'; error: string }; // worker-level failure
