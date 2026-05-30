@@ -111,7 +111,8 @@ Each page shows the assembled bytes, the hook firing, `X0 = 42`, and a green
 
 ## Headless proofs (no browser)
 
-The same vendored builds, run under Node, so the toolchain is provable in CI:
+The same vendored builds, run under Node, so the toolchain is provable in CI.
+Run all three with `npm test`, or individually:
 
 ```bash
 node verify.js                 # asm.js Keystone + asm.js Unicorn
