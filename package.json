@@ -5,6 +5,10 @@
   "description": "In-browser AArch64 assemble (Keystone) + emulate (Unicorn) round-trip, proven headlessly under Node.",
   "scripts": {
     "test": "node verify.js && node verify-keystone-wasm.js && node verify-wasm.js",
-    "serve": "python3 -m http.server 8000"
+    "build": "node build.js",
+    "serve": "node serve.js"
+  },
+  "dependencies": {
+    "serve-handler": "^6.1.7"
   }
 }

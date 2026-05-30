@@ -2,89 +2,130 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Keystone + Unicorn round-trip (AArch64, in-browser)</title>
+<title>Keystone (true WASM) + Unicorn round-trip — AArch64</title>
 <style>
   body { font-family: ui-monospace, monospace; margin: 2rem; max-width: 60rem; }
-  pre  { background: #111; color: #eee; padding: 1rem; border-radius: 6px;
-         white-space: pre-wrap; word-break: break-word; }
+  pre  { background: #111; color: #eee; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
   .ok  { color: #2ecc40; font-weight: bold; }
   .err { color: #ff4136; font-weight: bold; }
+  .note{ color: #666; font-size: .85rem; }
   h1   { font-size: 1.1rem; }
 </style>
 </head>
 <body>
-<h1>Assemble (Keystone) &rarr; Emulate (Unicorn) &mdash; AArch64, no backend</h1>
+<h1>Assemble with <b>true-WASM Keystone</b> &rarr; emulate with Unicorn &mdash; AArch64</h1>
+<p class="note">Keystone here is a from-source WebAssembly build (vendor-wasm/keystone-core.wasm).
+Unicorn stays asm.js: Unicorn 2 cannot be compiled to WASM (no wasm TCG backend) — see README.
+Serve over HTTP (not file://) so the .wasm can be fetched.</p>
 <pre id="log">loading engines…</pre>
 
-<!-- Both are self-contained asm.js Emscripten builds that expose the globals
-     `ks` and `uc` synchronously. No bundler, no fetch, no backend. -->
-<script src="vendor/keystone.min.js"></script>
+<!-- asm.js Unicorn: exposes global `uc` synchronously. -->
 <script src="vendor/unicorn-aarch64.min.js"></script>
+
+<!-- ENGINE: true-WASM Keystone (default).
+     MODULARIZE factory `MKeystone`, instantiates async; needs HTTP for the .wasm fetch. -->
+<script src="vendor-wasm/keystone-core.js"></script>
+
+<!-- ALTERNATIVE ENGINE: asm.js Keystone (zero-build, works from file://).
+     To use it instead, comment out the keystone-core.js tag above, uncomment the
+     tag below, and switch the assemble path in the script (see ALTERNATIVE block).
+<script src="vendor/keystone.min.js"></script>
+-->
+
 <script>
 (function () {
   var el = document.getElementById('log');
   var lines = [];
   function log(s) { lines.push(s); el.textContent = lines.join('\n'); }
+  function fail(err) {
+    log('');
+    var d = document.createElement('div'); d.className = 'err';
+    d.textContent = 'FAIL — ' + (err && err.message ? err.message : err);
+    document.body.appendChild(d);
+    if (window.console) console.error(err);
+  }
 
+  var KS_ARCH_ARM64 = 2, KS_MODE_LE = 0;
   var PROGRAM = 'mov x0, #42\nsvc #0';
   var BASE = 0x10000;
 
-  try {
-    if (typeof ks === 'undefined') throw new Error('Keystone (ks) failed to load');
-    if (typeof uc === 'undefined') throw new Error('Unicorn (uc) failed to load');
-    log('Engines loaded.');
-    log('Program:\n  ' + PROGRAM.replace('\n', '\n  '));
+  // Minimal Keystone-over-WASM assemble(): returns a normal byte array.
+  function ksAsm(m, program, base) {
+    var hp = m._malloc(4);
+    if (m.ccall('ks_open', 'number', ['number', 'number', 'pointer'],
+        [KS_ARCH_ARM64, KS_MODE_LE, hp]) !== 0) throw new Error('ks_open failed');
+    var handle = m.getValue(hp, '*');
+    var ip = m._malloc(4), sp = m._malloc(4), cp = m._malloc(4);
+    var blen = program.length + 1, bp = m._malloc(blen);
+    m.stringToUTF8(program, bp, blen);
+    // `address` is a single i64 param in this build -> BigInt.
+    if (m.ccall('ks_asm', 'number',
+        ['pointer', 'pointer', 'number', 'pointer', 'pointer', 'pointer'],
+        [handle, bp, BigInt(base), ip, sp, cp]) !== 0) throw new Error('ks_asm failed');
+    var insn = m.getValue(ip, '*'), size = m.getValue(sp, 'i32');
+    var out = [];
+    for (var i = 0; i < size; i++) out.push(m.getValue(insn + i, 'i8') & 0xff);
+    m.ccall('ks_free', 'void', ['pointer'], [insn]);
+    m.ccall('ks_close', 'number', ['pointer'], [handle]);
+    return out;
+  }
 
-    // 1 + 2. Assemble with Keystone (AArch64, little-endian).
-    var ksCtx = new ks.Keystone(ks.ARCH_ARM64, ks.MODE_LITTLE_ENDIAN);
-    var out = ksCtx.asm(PROGRAM, BASE);
-    ksCtx.close();
-    if (out.failed) throw new Error('Keystone failed to assemble the program');
-    var code = Array.prototype.slice.call(out.mc);
-    var hex = code.map(function (b) {
-      return ('0' + (b & 0xff).toString(16)).slice(-2);
-    }).join(' ');
-    log('Keystone: ' + out.count + ' insns, ' + code.length + ' bytes: ' + hex);
+  // Run the round-trip: takes the assembled `code` byte array, emulates it,
+  // checks x0 == 42 and that the svc interrupt hook fired.
+  function emulate(code) {
+    var hex = code.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join(' ');
+    log('Keystone: ' + code.length + ' bytes: ' + hex);
 
-    // 3. Map memory, write the bytes at BASE (PC starts there via emu_start).
     var e = new uc.Unicorn(uc.ARCH_ARM64, uc.MODE_ARM);
     e.mem_map(BASE, 4 * 1024, uc.PROT_ALL);
     e.mem_write(BASE, code);
-
-    // 4. Interrupt hook: catch the `svc` and stop the CPU.
-    var svcFired = false, svcIntno = null;
-    e.hook_add(uc.HOOK_INTR, function (handle, intno) {
-      svcFired = true;
-      svcIntno = intno;
-      handle.emu_stop();
-    }, {}, BASE, BASE + code.length);
-
-    // 5. Run, then read X0 back.
+    var svcFired = false, intno = null;
+    e.hook_add(uc.HOOK_INTR, function (h, n) { svcFired = true; intno = n; h.emu_stop(); },
+      {}, BASE, BASE + code.length);
     e.emu_start(BASE, BASE + code.length, 0, 0);
     var x0 = e.reg_read_i64(uc.ARM64_REG_X0);
     e.close();
 
-    log('Unicorn: svc hook fired = ' + svcFired + ' (intno=' + svcIntno + ')');
-    log('Unicorn: X0 = ' + x0);
+    log('Unicorn(asm.js): svc hook fired = ' + svcFired + ' (intno=' + intno + ')');
+    log('Unicorn(asm.js): X0 = ' + x0);
 
-    // 6. Eyeball success criterion.
     if (svcFired && x0 === 42) {
       log('');
-      var ok = document.createElement('div');
-      ok.className = 'ok';
-      ok.textContent = 'PASS — x0 == 42 and the svc hook fired.';
-      document.body.appendChild(ok);
+      var d = document.createElement('div'); d.className = 'ok';
+      d.textContent = 'PASS — assembled, emulated, x0 == 42, svc hook fired.';
+      document.body.appendChild(d);
     } else {
       throw new Error('Unexpected result (svcFired=' + svcFired + ', x0=' + x0 + ')');
     }
-  } catch (err) {
-    log('');
-    var bad = document.createElement('div');
-    bad.className = 'err';
-    bad.textContent = 'FAIL — ' + (err && err.message ? err.message : err);
-    document.body.appendChild(bad);
-    if (window.console) console.error(err);
   }
+
+  if (typeof uc === 'undefined') { fail(new Error('Unicorn (uc) failed to load')); return; }
+
+  // ENGINE: true-WASM Keystone (default). Async factory, then assemble + emulate.
+  if (typeof MKeystone === 'undefined') { fail(new Error('Keystone WASM glue failed to load')); return; }
+  MKeystone().then(function (m) {
+    try {
+      log('Engines loaded (Keystone=WASM, Unicorn=asm.js).');
+      log('Program:\n  ' + PROGRAM.replace('\n', '\n  '));
+      emulate(ksAsm(m, PROGRAM, BASE));
+    } catch (err) { fail(err); }
+  }).catch(fail);
+
+  // ALTERNATIVE ENGINE: asm.js Keystone (zero-build, synchronous global `ks`).
+  // To use it, comment out the MKeystone block above and uncomment this one
+  // (and swap the <script> tags in <head> as noted there).
+  /*
+  if (typeof ks === 'undefined') { fail(new Error('Keystone (ks) failed to load')); return; }
+  try {
+    log('Engines loaded (Keystone=asm.js, Unicorn=asm.js).');
+    log('Program:\n  ' + PROGRAM.replace('\n', '\n  '));
+    var ksCtx = new ks.Keystone(ks.ARCH_ARM64, ks.MODE_LITTLE_ENDIAN);
+    var out = ksCtx.asm(PROGRAM, BASE);
+    ksCtx.close();
+    if (out.failed) throw new Error('Keystone failed to assemble the program');
+    emulate(Array.prototype.slice.call(out.mc));
+  } catch (err) { fail(err); }
+  */
 })();
 </script>
 </body>

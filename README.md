@@ -32,8 +32,8 @@ hook (`UC_HOOK_INTR`) fired.
 
 | Round-trip | Assembler | Emulator | Page | Headless proof | Status |
 |------------|-----------|----------|------|----------------|--------|
-| **asm.js** (zero-build) | Keystone asm.js | Unicorn asm.js | `index.html` | `node verify.js` | ✅ works |
-| **WASM-assemble** (hybrid) | **Keystone true WASM** (built from source) | Unicorn asm.js | `index-wasm.html` | `node verify-wasm.js` | ✅ works |
+| **WASM-assemble** (default) | **Keystone true WASM** (built from source) | Unicorn asm.js | `index.html` | `node verify-wasm.js` | ✅ works |
+| **asm.js** (alternative) | Keystone asm.js | Unicorn asm.js | `index.html` (commented block) | `node verify.js` | ✅ works |
 
 Both print the assembled bytes `40 05 80 d2 01 00 00 d4`, fire the `svc` hook
 (intno=2), and read **X0 = 42**.
@@ -104,21 +104,19 @@ rather than substituting a different library"), the emulator remains Unicorn
 
 ## Run it locally
 
-**asm.js round-trip** — `index.html`. Pure JS (no `.wasm` fetch), so even
-`file://` works; a static server is cleaner:
+`index.html` runs the **WASM-assemble round-trip** by default (Keystone true
+WASM + asm.js Unicorn). It must be served over HTTP so the `.wasm` can be
+fetched (`file://` will not work):
 
 ```bash
 python3 -m http.server 8000   # then open http://localhost:8000/
 ```
 
-**WASM-assemble round-trip** — `index-wasm.html`. Must be served over HTTP so the
-`.wasm` can be fetched (`file://` will not work):
+The **asm.js round-trip** (pure JS, works even from `file://`) is kept as a
+commented-out alternative inside `index.html`: swap the engine `<script>` tag in
+`<head>` and the matching block in the script as noted in the comments.
 
-```bash
-python3 -m http.server 8000   # then open http://localhost:8000/index-wasm.html
-```
-
-Each page shows the assembled bytes, the hook firing, `X0 = 42`, and a green
+The page shows the assembled bytes, the hook firing, `X0 = 42`, and a green
 **PASS**.
 
 ## Headless proofs (no browser)
@@ -160,7 +158,7 @@ cd ../.. && git clone --depth 1 https://github.com/keystone-engine/keystone.git 
 bash scripts/build-keystone-wasm.sh
 ```
 
-## API notes (AlexAltea asm.js wrappers, used by `index.html`)
+## API notes (AlexAltea asm.js wrappers — Unicorn, and the commented asm.js-Keystone alternative in `index.html`)
 
 - `new ks.Keystone(ks.ARCH_ARM64, ks.MODE_LITTLE_ENDIAN).asm(text, addr)` →
   `{ mc: Uint8Array, failed: bool, count }`.
@@ -170,6 +168,6 @@ bash scripts/build-keystone-wasm.sh
 - The `HOOK_INTR` callback gets `(handle, intno, user_data)`; `handle` is the
   Unicorn instance, so `handle.emu_stop()` halts on `svc`.
 
-In the WASM Keystone path (`index-wasm.html` / `verify-wasm.js`) the engine is
+In the default WASM Keystone path (`index.html` / `verify-wasm.js`) the engine is
 driven directly via `ccall`; note `ks_asm`'s `uint64_t address` is a single i64
 param (WASM_BIGINT), so it is passed as a `BigInt`.
