@@ -12,6 +12,105 @@
 ## Description
 cpu-emulator — Keystone + Unicorn AArch64 round-trip (in-browser)
 
+A browser-based ARM64 (AArch64) assembly learning environment: write assembly,
+assemble it to machine code, and run/single-step it under emulation — entirely
+client-side, no backend, no native execution.
+
+---
+
+## Architecture (Phase 2 core)
+
+```
+source text ──► Keystone (WASM) ──► machine-code bytes
+                                          │
+                            loaded at the code base in
+                                Unicorn (asm.js) flat memory
+                                          │
+                          ┌───────────────┴───────────────┐
+                          ▼                                ▼
+              emu_start(pc,end,0,1)  (step)      UC_HOOK_INTR on `svc`
+              emu_start(pc,end,0,cap) (run)      ──► ArchProfile syscall layer
+                          │                          ──► console output / exit
+                          ▼
+              snapshot: registers + NZCV + pc + current source line + memory
+```
+
+- **`Keystone`** (`src/engine/keystone.ts`) — typed wrapper: `assemble(text, base)`
+  → bytes, or a clean error message (`ks_errno`/`ks_strerror`).
+- **`EmulatorHarness`** (`src/emulator/harness.ts`) — environment-agnostic core:
+  assemble → map memory → load → `run`/`step`/`reset` → `snapshot`. It receives
+  already-loaded engine handles, so it runs in both the browser worker and Node.
+- **Engine loaders** — `load.worker.ts` (browser, `importScripts`) and
+  `load.node.ts` (Node, `vm`+`require`). Same engines, two transports.
+- **Web Worker** (`src/worker/emulator.worker.ts`) — drives the harness via the
+  message protocol in `src/emulator/protocol.ts`.
+
+### The `ArchProfile` seam
+
+Everything architecture-specific lives behind one interface
+(`src/arch/ArchProfile.ts`) so adding x86 later is "write a new profile," not
+"rewrite the app." Only `Arm64Profile` (`src/arch/arm64.ts`) exists today; the
+harness/worker/UI talk **only** to the interface. A profile bundles:
+
+- Keystone arch/mode + Unicorn arch/mode constants.
+- The memory map (regions + initial SP).
+- The display registers + their Unicorn register ids, and a flags decoder (NZCV).
+- A syscall **decoder** (`decodeSyscall` → `{number, args}`) and a side-effect-free
+  **dispatcher** (`executeSyscall` → an *action* the harness performs).
+- The instruction-length / PC→source strategy.
+
+### Memory map (ARM64)
+
+| Region | Base      | Size   | Notes                          |
+|--------|-----------|--------|--------------------------------|
+| code   | `0x10000` | 64 KB  | assembled bytes loaded here    |
+| data   | `0x20000` | 64 KB  | snapshotted (first 256 bytes)  |
+| stack  | `0x30000` | 64 KB  | SP initialised to `0x40000` (top, grows down) |
+
+All regions are mapped `PROT_ALL` (a teaching sandbox shouldn't trip learners on
+W^X). PC starts at the code base.
+
+### Syscall ABI (ARM64 Linux)
+
+Handled via `UC_HOOK_INTR` on `svc`. Number in **x8**, args in **x0–x5**.
+
+- `write` (**#64**): read `count` bytes at `buf` from emulated memory, append to
+  the console (fd ignored — all output goes to the console panel).
+- `exit` (**#93**) / `exit_group` (**#94**): stop the emulator with the given code.
+- Unknown syscalls: reported in `diagnostics`, never crash.
+
+### PC → source mapping
+
+ARM64 is fixed 4-byte: the *i*-th instruction-bearing source line (blank,
+comment-only, label-only and directive lines emit nothing) maps to byte offset
+`i*4`. The strategy lives behind the profile so variable-length archs (x86) can
+swap it. Limitation: a line that assembles to more than one instruction desyncs
+the map from that point — acceptable for a teaching sandbox.
+
+### Execution guards
+
+Infinite loops are expected. `run` is bounded by an **instruction-count cap**
+(200 000) — the only in-engine guard, because this asm.js Unicorn can't honor
+`emu_start`'s µs timeout (it needs `pthread_sigmask`). Wall-clock protection
+comes from the worker: the main thread can terminate a hung worker.
+
+### Build / run
+
+```bash
+npm install
+npm run dev      # Vite dev server (the app)
+npm run build    # tsc typecheck + Vite production build
+npm run proof    # headless Node proof: drives the REAL harness, no browser
+```
+
+`npm run proof` assembles a write+exit program, runs it (expects console `Hi\n`,
+exit 0), single-steps it with line mapping, and checks the assemble-error path —
+the same `EmulatorHarness` the browser uses.
+
+---
+
+## Phase 1 — toolchain validation spike
+
 Toolchain validation: assemble and run ARM64 (AArch64) assembly entirely
 client-side — no backend, no native execution. Keystone assembles the text to
 machine code; Unicorn loads those bytes and emulates the CPU.
