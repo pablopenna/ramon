@@ -19,6 +19,59 @@ execution.
 
 ---
 
+## Memory map — and why it isn't the `as` + `ld` workflow
+
+If you've written ARM assembly on Linux, the usual loop is `as foo.s -o foo.o`
+then `ld foo.o -o foo`, and the kernel's ELF loader decides where your code,
+data, and stack actually live at runtime. **None of that happens here.** There is
+no object file, no linker, no ELF, and no OS loader. Keystone takes your assembly
+text and emits **raw machine-code bytes**; we copy those bytes to a **fixed
+address we choose** in a flat block of emulated RAM, point the emulated PC at it,
+and start executing.
+
+So the differences that trip people up:
+
+| Conventional `as` + `ld`                              | This emulator                                              |
+|-------------------------------------------------------|------------------------------------------------------------|
+| Assemble → object file → **link** → ELF executable    | Assemble → **raw bytes**, loaded directly (no link step)   |
+| Sections (`.text`, `.data`, `.bss`) placed by the linker | One **flat** address space; you pick the bases (see below) |
+| Symbols/relocations resolved at link time             | No relocation pass — labels resolve **within the one blob** |
+| OS loader maps segments and sets up the stack         | We `mem_map` regions and set **SP** ourselves              |
+| `.data`/`.rodata` you write get loaded for you        | Only the **code** blob is loaded; the data region starts **zeroed** |
+| W^X enforced (code pages not writable, etc.)          | Every region is `PROT_ALL` — a teaching sandbox, no W^X traps |
+| Entry point from ELF header / `_start`                | Execution begins at the **code base**, top to bottom        |
+
+This is deliberate (see `CLAUDE.md`): a linker only earns its keep with multiple
+sections, symbols, and relocations across translation units — none of which a
+single-file teaching snippet has. Skipping it keeps the byte-offset → source-line
+mapping trivial and the whole round-trip understandable.
+
+### The layout (ARM64 — ARM32 is identical)
+
+Three non-overlapping 64 KB regions, page-aligned:
+
+| Region | Base      | Size   | Notes                                            |
+|--------|-----------|--------|--------------------------------------------------|
+| code   | `0x10000` | 64 KB  | your assembled bytes are loaded here; PC starts here |
+| data   | `0x20000` | 64 KB  | scratch RAM, starts **zeroed**; first 256 B snapshotted to the UI |
+| stack  | `0x30000` | 64 KB  | **SP** initialised to `0x40000` (the top — the stack grows **down**) |
+
+Practical consequences when writing code for this sandbox:
+
+- **You won't get a `.data` section for free.** If you need a string or buffer,
+  either embed it in the code region (e.g. after your instructions) or write it
+  into the data region at runtime, then point your syscall at that address.
+- **Addresses are concrete and absolute.** `0x10000`, `0x20000`, `0x40000` are
+  real, predictable numbers you can hard-code — there's no relocation to worry
+  about.
+- **There is no `_start` / `main` distinction.** The first instruction in your
+  text is the first thing that runs.
+
+ARM32 uses the **same bases and sizes**; only the register widths and syscall ABI
+differ (see below).
+
+---
+
 ## Architecture (Phase 2 core)
 
 ```
@@ -62,16 +115,6 @@ the interface. A profile bundles:
   **dispatcher** (`executeSyscall` → an *action* the harness performs).
 - The instruction-length / PC→source strategy.
 
-### Memory map (ARM64)
-
-| Region | Base      | Size   | Notes                          |
-|--------|-----------|--------|--------------------------------|
-| code   | `0x10000` | 64 KB  | assembled bytes loaded here    |
-| data   | `0x20000` | 64 KB  | snapshotted (first 256 bytes)  |
-| stack  | `0x30000` | 64 KB  | SP initialised to `0x40000` (top, grows down) |
-
-All regions are mapped `PROT_ALL` (a teaching sandbox shouldn't trip learners on
-W^X). PC starts at the code base.
 
 ### Syscall ABI (ARM64 Linux)
 
