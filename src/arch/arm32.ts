@@ -3,7 +3,7 @@
 // from the loaded `uc` namespace (here the 32-bit ARM asm.js build).
 
 import type { UnicornInstance, UnicornNamespace } from '../engine/unicorn.ts';
-import { buildFixedWidthSourceMap } from '../emulator/sourceMap.ts';
+import { buildExactSourceMap } from '../emulator/sourceMap.ts';
 import type {
   ArchProfile,
   DecodedSyscall,
@@ -114,8 +114,8 @@ export function createArm32Profile(uc: UnicornNamespace): ArchProfile {
 
     instructionLength: 4, // A32: fixed 4-byte instructions (Thumb is a later toggle).
 
-    buildSourceMap(source: string, totalBytes: number): SourceMap {
-      return buildFixedWidthSourceMap(source, 4, totalBytes);
+    buildSourceMap(source, totalBytes, assembleLine): SourceMap {
+      return buildExactSourceMap(source, totalBytes, 4, assembleLine);
     },
 
     initRegisters(cpu: UnicornInstance): void {

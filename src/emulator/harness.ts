@@ -8,7 +8,7 @@ import type { KeystoneModule } from '../engine/keystone.ts';
 import { readRegExact } from '../engine/unicorn.ts';
 import type { UnicornInstance, UnicornNamespace } from '../engine/unicorn.ts';
 import type { ArchProfile, SourceMap, SyscallContext } from '../arch/ArchProfile.ts';
-import { isInstructionLine } from './sourceMap.ts';
+import { collectDefinitions, isInstructionLine, stripToInstruction } from './sourceMap.ts';
 import type { MemoryWindow, Snapshot, StopReason } from './protocol.ts';
 
 /** Default execution guard. The instruction-count cap is the ONLY in-engine
@@ -57,6 +57,8 @@ export class EmulatorHarness {
   private exitCode: number | null = null;
   private stopReason: StopReason = 'idle';
   private diagnostics: string[] = [];
+  /** Concise message for the last runtime fault (null when none). */
+  private faultMessage: string | null = null;
 
   constructor(
     ksModule: KeystoneModule,
@@ -104,18 +106,14 @@ export class EmulatorHarness {
     this.installInterruptHook(cpu, map.code.base, map.code.base + map.code.size);
 
     this.cpu = cpu;
-    this.sourceMap = this.profile.buildSourceMap(source, asm.bytes.length);
+    // The map measures each line by re-assembling it at the code base; reuse this
+    // Keystone handle so `ldr =imm` / data directives are sized exactly.
+    const assembleLine = (text: string): number | null => {
+      const r = this.ks.assemble(text, map.code.base);
+      return r.ok ? r.bytes.length : null;
+    };
+    this.sourceMap = this.profile.buildSourceMap(source, asm.bytes.length, assembleLine);
     this.stopReason = 'idle';
-
-    // Sanity note if the fixed-width map likely desynced (multi-insn line, etc.).
-    if (this.profile.instructionLength) {
-      const expected = asm.bytes.length / this.profile.instructionLength;
-      if (asm.count !== expected) {
-        this.diagnostics.push(
-          `Note: ${asm.count} instructions in ${asm.bytes.length} bytes; line highlighting may be approximate.`,
-        );
-      }
-    }
 
     return { ok: true, bytes: asm.bytes.length, count: asm.count, snapshot: this.snapshot() };
   }
@@ -190,6 +188,7 @@ export class EmulatorHarness {
     this.exitCode = null;
     this.diagnostics = [];
     this.stopReason = 'idle';
+    this.faultMessage = null;
   }
 
   /** Reload the same source from scratch (re-assemble + fresh CPU). */
@@ -216,6 +215,7 @@ export class EmulatorHarness {
         exitCode: this.exitCode,
         stopReason: this.stopReason,
         diagnostics: [...this.diagnostics],
+        fault: this.faultMessage,
       };
     }
 
@@ -256,6 +256,7 @@ export class EmulatorHarness {
       exitCode: this.exitCode,
       stopReason: this.stopReason,
       diagnostics: [...this.diagnostics],
+      fault: this.faultMessage,
     };
   }
 
@@ -312,14 +313,7 @@ export class EmulatorHarness {
    */
   private locateAssembleError(source: string): { line: number; text: string } | null {
     const lines = source.split('\n');
-    const defs: string[] = [];
-    for (const raw of lines) {
-      const code = stripLineComment(raw);
-      const label = /^\s*([A-Za-z_.$][\w.$]*)\s*:/.exec(code);
-      if (label) defs.push(`${label[1]}:`);
-      const equ = /^\s*\.(?:equ|set)\s+([A-Za-z_.$][\w.$]*)\s*,\s*(.+)$/.exec(code);
-      if (equ) defs.push(`.equ ${equ[1]}, ${equ[2].trim()}`);
-    }
+    const defs = collectDefinitions(lines);
     const prefix = defs.length ? defs.join('\n') + '\n' : '';
     const base = this.profile.memoryMap.code.base;
 
@@ -330,8 +324,7 @@ export class EmulatorHarness {
       // present (it returns OK), which would hide the very error we're hunting.
       // Probing the bare instruction surfaces the failure. The leading label is
       // dropped so the prefix's copy of it isn't a duplicate definition.
-      const instr = stripLineComment(lines[i]).replace(/^\s*[A-Za-z_.$][\w.$]*\s*:/, '');
-      if (!this.ks.assemble(prefix + instr, base).ok) {
+      if (!this.ks.assemble(prefix + stripToInstruction(lines[i]), base).ok) {
         return { line: i, text: lines[i].trim() };
       }
     }
@@ -340,9 +333,12 @@ export class EmulatorHarness {
 
   private handleRuntimeError(err: unknown): Snapshot {
     const message = err instanceof Error ? err.message : String(err);
+    // Unicorn's message spans multiple lines ("...failed with code 6:\nInvalid
+    // memory read (UC_ERR_READ_UNMAPPED)"); collapse it to one line for display.
+    this.faultMessage = message.replace(/\s+/g, ' ').trim();
     this.stopReason = 'error';
     this.halted = true;
-    this.note(`Runtime fault: ${message}`);
+    this.note(`Runtime fault: ${this.faultMessage}`);
     return this.snapshot();
   }
 
@@ -354,16 +350,6 @@ export class EmulatorHarness {
   private note(text: string): void {
     this.diagnostics.push(text);
   }
-}
-
-/** Strip `;` and `//` line comments (matches sourceMap's classification). */
-function stripLineComment(line: string): string {
-  let out = line;
-  for (const marker of [';', '//']) {
-    const idx = out.indexOf(marker);
-    if (idx !== -1) out = out.slice(0, idx);
-  }
-  return out;
 }
 
 /**

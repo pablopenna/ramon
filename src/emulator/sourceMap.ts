@@ -1,25 +1,35 @@
-// Fixed-width source mapping: used by architectures whose instructions are all
-// the same byte length (ARM64 = 4). The i-th instruction-bearing source line
-// maps to byte offset i*length. Lines that emit no code (blank, comment-only,
-// label-only, directive-only) are skipped.
+// Source mapping: translate between assembled byte offsets (relative to the code
+// base) and source lines, so the run/step loop can highlight the current line and
+// pin a runtime fault to the instruction that caused it.
 //
-// Limitation: a source line that assembles to more than one instruction (a
-// multi-instruction pseudo-op, or a data directive emitting != length bytes)
-// will desync the map from that point on. Acceptable for a teaching sandbox;
-// documented in the README. Variable-length archs (x86) need a different
-// strategy behind their own profile.
+// Two strategies live here:
+//   - buildExactSourceMap (preferred): measure each instruction-bearing line's
+//     real assembled size and lay them out head-to-tail. Correct even when a line
+//     emits != one fixed-width instruction — e.g. ARM's `ldr rN, =imm`
+//     literal-pool load (8 bytes) or a data directive. Needs an assembler.
+//   - buildFixedWidthSourceMap (fallback): assume every instruction is the same
+//     byte length (ARM = 4). Cheap, but a line that emits a different number of
+//     bytes desyncs the map from that point on. Used only when exact sizing can't
+//     be completed. Variable-length archs (x86) will need their own strategy.
 
 import type { SourceMap } from '../arch/ArchProfile.ts';
 
+const LABEL_RE = /^\s*([A-Za-z_.$][\w.$]*)\s*:/;
+const EQU_RE = /^\s*\.(?:equ|set)\s+([A-Za-z_.$][\w.$]*)\s*,\s*(.+)$/;
+
+/** Strip `;` and `//` line comments. */
+export function stripComment(line: string): string {
+  let out = line;
+  for (const marker of [';', '//']) {
+    const idx = out.indexOf(marker);
+    if (idx !== -1) out = out.slice(0, idx);
+  }
+  return out;
+}
+
 /** True if a logical source line emits a machine instruction. */
 export function isInstructionLine(rawLine: string): boolean {
-  // Strip line comments: ';', '//', and '#' (Keystone/LLVM-ish). Keep it simple.
-  let line = rawLine;
-  for (const marker of [';', '//']) {
-    const idx = line.indexOf(marker);
-    if (idx !== -1) line = line.slice(0, idx);
-  }
-  line = line.trim();
+  const line = stripComment(rawLine).trim();
   if (line === '') return false;
   if (line.startsWith('.')) return false; // directive
   // label-only line: "foo:" (possibly with nothing after).
@@ -27,6 +37,91 @@ export function isInstructionLine(rawLine: string): boolean {
   // "label: instr" -> still an instruction line (the instr part emits code).
   return true;
 }
+
+/**
+ * Collect every label and `.equ`/`.set` definition in the program, as a list of
+ * standalone definition lines. Prepending these to a single probed instruction
+ * lets forward references (e.g. `b loop`, `mov r0, #CONST`) resolve so the line
+ * still assembles — and a probed line's *size* doesn't depend on the actual
+ * target address, only on the instruction form, so dummy top-of-program
+ * definitions are safe for measuring.
+ */
+export function collectDefinitions(lines: string[]): string[] {
+  const defs: string[] = [];
+  for (const raw of lines) {
+    const code = stripComment(raw);
+    const label = LABEL_RE.exec(code);
+    if (label) defs.push(`${label[1]}:`);
+    const equ = EQU_RE.exec(code);
+    if (equ) defs.push(`.equ ${equ[1]}, ${equ[2].trim()}`);
+  }
+  return defs;
+}
+
+/** Reduce a source line to the bare instruction: drop the comment and any
+ *  leading `label:`. */
+export function stripToInstruction(rawLine: string): string {
+  return stripComment(rawLine).replace(LABEL_RE, '').trim();
+}
+
+/**
+ * Exact map: measure each instruction-bearing line by assembling it in isolation
+ * (with all label/`.equ` definitions prepended so forward refs resolve), then lay
+ * the lines out head-to-tail. Falls back to the fixed-width map when a line can't
+ * be sized or the head-to-tail total overruns the real assembled size (e.g. the
+ * assembler merged duplicate literal-pool entries) — i.e. when we can't fully
+ * trust the per-line layout.
+ */
+export function buildExactSourceMap(
+  source: string,
+  totalBytes: number,
+  fallbackLength: number | null,
+  assembleLine: (text: string) => number | null,
+): SourceMap {
+  const lines = source.split('\n');
+  const defs = collectDefinitions(lines);
+  const prefix = defs.length ? defs.join('\n') + '\n' : '';
+
+  const spans: { line: number; start: number; end: number }[] = [];
+  const lineToStart = new Map<number, number>();
+  let offset = 0;
+  let trustworthy = true;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!isInstructionLine(lines[i])) continue;
+    const size = assembleLine(prefix + stripToInstruction(lines[i]));
+    if (size === null || size <= 0) {
+      trustworthy = false;
+      break;
+    }
+    spans.push({ line: i, start: offset, end: offset + size });
+    lineToStart.set(i, offset);
+    offset += size;
+  }
+
+  if (!trustworthy || offset > totalBytes) {
+    return fallbackLength
+      ? buildFixedWidthSourceMap(source, fallbackLength, totalBytes)
+      : NULL_SOURCE_MAP;
+  }
+
+  return {
+    offsetToLine(o: number): number | null {
+      if (o < 0 || o >= totalBytes) return null;
+      for (const s of spans) if (o >= s.start && o < s.end) return s.line;
+      return null; // in trailing data, past the last instruction span
+    },
+    lineToOffset(line: number): number | null {
+      const start = lineToStart.get(line);
+      return start === undefined ? null : start;
+    },
+  };
+}
+
+const NULL_SOURCE_MAP: SourceMap = {
+  offsetToLine: () => null,
+  lineToOffset: () => null,
+};
 
 export function buildFixedWidthSourceMap(
   source: string,

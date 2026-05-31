@@ -2,7 +2,7 @@
 // ids / arch / mode / prot constants come from the loaded `uc` namespace.
 
 import type { UnicornInstance, UnicornNamespace } from '../engine/unicorn.ts';
-import { buildFixedWidthSourceMap } from '../emulator/sourceMap.ts';
+import { buildExactSourceMap } from '../emulator/sourceMap.ts';
 import type {
   ArchProfile,
   DecodedSyscall,
@@ -109,8 +109,8 @@ export function createArm64Profile(uc: UnicornNamespace): ArchProfile {
 
     instructionLength: 4,
 
-    buildSourceMap(source: string, totalBytes: number): SourceMap {
-      return buildFixedWidthSourceMap(source, 4, totalBytes);
+    buildSourceMap(source, totalBytes, assembleLine): SourceMap {
+      return buildExactSourceMap(source, totalBytes, 4, assembleLine);
     },
 
     initRegisters(cpu: UnicornInstance): void {

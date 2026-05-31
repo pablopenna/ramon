@@ -160,8 +160,17 @@ function renderSnapshot(snap: Snapshot, opts: { resetDiff: boolean }): void {
   renderFlags(snap);
   renderConsole(snap);
   renderDiagnostics(snap);
-  editor.highlightLine(snap.line);
   updateButtons();
+
+  if (snap.stopReason === 'error') {
+    // A runtime fault: pin it to the faulting line with the same prominent error
+    // UI as an assembler error, instead of leaving it only in the diagnostics.
+    editor.highlightLine(null);
+    showRuntimeError(snap);
+  } else {
+    if (!el.asmError.hidden) clearAsmError(); // drop a stale fault from a prior run
+    editor.highlightLine(snap.line);
+  }
 
   if (snap.halted) {
     const code = snap.exitCode === null ? '' : ` (exit code ${snap.exitCode})`;
@@ -246,35 +255,77 @@ function setStatus(text: string, kind: 'ok' | 'warn' | 'error'): void {
 
 type AssembleError = Extract<WorkerResponse, { type: 'assemble-error' }>;
 
-function showAsmError(msg: AssembleError): void {
+/** Render the shared error region: a headline (pinned to a line when known), an
+ *  echo of the offending source line, and a plain-language hint. Drives the red
+ *  line highlight too. Used for both assembler errors and runtime faults. */
+function showError(opts: {
+  line?: number;
+  message: string;
+  noLineLabel: string;
+  lineText?: string;
+  hint?: string;
+}): void {
   const frag = document.createDocumentFragment();
 
   const headline = document.createElement('div');
   headline.className = 'asm-error-headline';
   headline.textContent =
-    msg.line === undefined
-      ? `Assembler error: ${msg.error}`
-      : `Line ${msg.line + 1}: ${msg.error}`;
+    opts.line === undefined
+      ? `${opts.noLineLabel}: ${opts.message}`
+      : `Line ${opts.line + 1}: ${opts.message}`;
   frag.append(headline);
 
   // Echo the offending source line so the problem is visible without scanning.
-  if (msg.lineText) {
+  if (opts.lineText) {
     const code = document.createElement('div');
     code.className = 'asm-error-line';
-    code.textContent = msg.lineText;
+    code.textContent = opts.lineText;
     frag.append(code);
   }
 
-  if (msg.hint) {
+  if (opts.hint) {
     const hint = document.createElement('div');
     hint.className = 'asm-error-hint';
-    hint.textContent = msg.hint;
+    hint.textContent = opts.hint;
     frag.append(hint);
   }
 
   el.asmError.replaceChildren(frag);
   el.asmError.hidden = false;
-  editor.highlightErrorLine(msg.line ?? null);
+  editor.highlightErrorLine(opts.line ?? null);
+}
+
+function showAsmError(msg: AssembleError): void {
+  showError({
+    line: msg.line,
+    message: msg.error,
+    noLineLabel: 'Assembler error',
+    lineText: msg.lineText,
+    hint: msg.hint,
+  });
+}
+
+function showRuntimeError(snap: Snapshot): void {
+  const line = snap.line ?? undefined;
+  const lineText = line === undefined ? undefined : editor.getText().split('\n')[line]?.trim() || undefined;
+  showError({
+    line,
+    message: snap.fault ?? 'Execution faulted.',
+    noLineLabel: 'Runtime error',
+    lineText,
+    hint: runtimeHint(snap.fault),
+  });
+}
+
+/** A short, plain-language nudge keyed off the Unicorn fault text. */
+function runtimeHint(fault: string | null): string | undefined {
+  if (!fault) return undefined;
+  const f = fault.toUpperCase();
+  if (f.includes('UNMAPPED'))
+    return 'The program touched an address that isn’t mapped. Check the pointer this instruction uses — e.g. `ldr r1, label` loads the value stored at `label`, not its address (use `adr r1, label` or `ldr r1, =label` for the address). Mapped regions: code 0x10000, data 0x20000, stack 0x30000.';
+  if (f.includes('INSN_INVALID') || f.includes('INVALID INSTRUCTION'))
+    return 'The CPU hit bytes it could not decode as an instruction — often execution ran past the code into data (a literal pool or a `.asciz` string). Make sure control flow can’t fall through into data.';
+  return undefined;
 }
 
 function clearAsmError(): void {

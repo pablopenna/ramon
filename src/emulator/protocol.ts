@@ -41,6 +41,8 @@ export interface Snapshot {
   stopReason: StopReason;
   /** Non-fatal notes (unknown syscalls, end-of-code, cap hit, runtime error text). */
   diagnostics: string[];
+  /** One-line runtime-fault message when stopReason === 'error', else null. */
+  fault: string | null;
 }
 
 // ---- main -> worker ----

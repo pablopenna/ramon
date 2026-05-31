@@ -99,8 +99,15 @@ export interface ArchProfile {
    */
   readonly instructionLength: number | null;
 
-  /** Build the offset<->line map for a given source, knowing the assembled size. */
-  buildSourceMap(source: string, totalBytes: number): SourceMap;
+  /** Build the offset<->line map for a given source, knowing the assembled size.
+   *  `assembleLine` measures one line's assembled byte length (null on failure),
+   *  letting the map account for lines that emit != one fixed-width instruction
+   *  (e.g. `ldr =imm` literal-pool loads). */
+  buildSourceMap(
+    source: string,
+    totalBytes: number,
+    assembleLine: (text: string) => number | null,
+  ): SourceMap;
 
   /** Set up initial register state on a fresh CPU (e.g. SP). PC is set by the harness. */
   initRegisters(cpu: UnicornInstance): void;
