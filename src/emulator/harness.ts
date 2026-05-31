@@ -8,7 +8,7 @@ import type { KeystoneModule } from '../engine/keystone.ts';
 import { readRegExact } from '../engine/unicorn.ts';
 import type { UnicornInstance, UnicornNamespace } from '../engine/unicorn.ts';
 import type { ArchProfile, SourceMap, SyscallContext } from '../arch/ArchProfile.ts';
-import { collectDefinitions, isInstructionLine, stripToInstruction } from './sourceMap.ts';
+import { collectDefinitions, isInstructionLine, stripComments, stripToInstruction } from './sourceMap.ts';
 import type { MemoryWindow, Snapshot, StopReason } from './protocol.ts';
 
 /** Default execution guard. The instruction-count cap is the ONLY in-engine
@@ -74,7 +74,12 @@ export class EmulatorHarness {
 
   /** Assemble `source`, build a fresh CPU, and load the code. */
   load(source: string): LoadResult {
-    const asm = this.ks.assemble(source, this.profile.memoryMap.code.base);
+    // Strip comments before assembling: this Keystone ARM build otherwise folds a
+    // trailing `//`/`;` into a bare operand (e.g. `swi 0 // ...`) and fails. The
+    // rest of the pipeline (source map, error locator) already ignores comments,
+    // so this just makes the assembler agree. Line count is preserved, so the
+    // original `source` still drives line highlighting and error display.
+    const asm = this.ks.assemble(stripComments(source), this.profile.memoryMap.code.base);
     if (!asm.ok) {
       const located = this.locateAssembleError(source);
       return {

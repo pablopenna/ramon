@@ -17,14 +17,30 @@ import type { SourceMap } from '../arch/ArchProfile.ts';
 const LABEL_RE = /^\s*([A-Za-z_.$][\w.$]*)\s*:/;
 const EQU_RE = /^\s*\.(?:equ|set)\s+([A-Za-z_.$][\w.$]*)\s*,\s*(.+)$/;
 
-/** Strip `;` and `//` line comments. */
+/** Strip a `;` or `//` line comment, ignoring markers inside a quoted string
+ *  (e.g. `.asciz "a // b"`). Returns the line up to the comment. */
 export function stripComment(line: string): string {
-  let out = line;
-  for (const marker of [';', '//']) {
-    const idx = out.indexOf(marker);
-    if (idx !== -1) out = out.slice(0, idx);
+  let quote: string | null = null; // open quote char, or null when outside a string
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') i++; // skip the escaped char
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === ';') return line.slice(0, i);
+    else if (c === '/' && line[i + 1] === '/') return line.slice(0, i);
   }
-  return out;
+  return line;
+}
+
+/** Drop comments from every line while preserving line count (so byte offsets and
+ *  source-line indices stay aligned). Feed this to the assembler so Keystone's ARM
+ *  parser never sees a `//`/`;` comment — which it otherwise mis-parses as part of
+ *  a bare operand (e.g. `swi 0 // ...` -> "Invalid operand"). */
+export function stripComments(source: string): string {
+  return source.split('\n').map(stripComment).join('\n');
 }
 
 /** True if a logical source line emits a machine instruction. */
