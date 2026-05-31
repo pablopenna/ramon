@@ -85,6 +85,24 @@ header .sub {
   cursor: not-allowed;
 }
 
+.arch-select {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.arch-select select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
 .status {
   margin-left: auto;
   font-size: 0.82rem;

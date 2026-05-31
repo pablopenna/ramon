@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "proof": "tsx scripts/headless-proof.ts",
+    "proof:arm32": "tsx scripts/headless-proof-arm32.ts",
     "spike:test": "node verify.js && node verify-keystone-wasm.js && node verify-wasm.js"
   },
   "dependencies": {

@@ -11,22 +11,11 @@ import './style.css';
 import EmulatorWorker from './worker/emulator.worker.ts?worker';
 import { SourceEditor } from './ui/editor.ts';
 import type { Snapshot, WorkerRequest, WorkerResponse } from './emulator/protocol.ts';
+import { ARCHES, DEFAULT_ARCH_ID, getArch } from './arch/registry.ts';
 
-// The headless proof's program: build "Hi\n" on the stack, write(1, sp, 3),
-// exit(0). A good first smoke test — Run shows output, Step shows the highlight.
-const DEFAULT_PROGRAM = [
-  'mov  x9, #0x6948        // x9 = "iH" (little-endian bytes)',
-  'movk x9, #0x000a, lsl #16   // add "\\n"',
-  'str  x9, [sp, #-16]!    // push onto the stack',
-  'mov  x0, #1             // fd = stdout',
-  'mov  x1, sp             // buf = sp',
-  'mov  x2, #3             // len = 3',
-  'mov  x8, #64            // syscall: write',
-  'svc  #0',
-  'mov  x0, #0             // exit code 0',
-  'mov  x8, #93            // syscall: exit',
-  'svc  #0',
-].join('\n');
+// The currently selected architecture. Each arch supplies its own sample program
+// (build "Hi\n" on the stack, write, exit) — see src/arch/registry.ts.
+let currentArchId = DEFAULT_ARCH_ID;
 
 /** How long to wait for a `run` to respond before assuming a hung worker. */
 const RUN_WALLCLOCK_MS = 5000;
@@ -40,13 +29,14 @@ const el = {
   diagnostics: document.getElementById('diagnostics')!,
   status: document.getElementById('status')!,
   asmError: document.getElementById('asm-error')!,
+  arch: document.getElementById('arch') as HTMLSelectElement,
   btnAssemble: document.getElementById('btn-assemble') as HTMLButtonElement,
   btnRun: document.getElementById('btn-run') as HTMLButtonElement,
   btnStep: document.getElementById('btn-step') as HTMLButtonElement,
   btnReset: document.getElementById('btn-reset') as HTMLButtonElement,
 };
 
-const editor = new SourceEditor(el.editor, DEFAULT_PROGRAM, {
+const editor = new SourceEditor(el.editor, getArch(currentArchId).defaultProgram, {
   onChange: () => {
     // Editing invalidates a shown assembler error and any loaded program;
     // require a re-assemble either way.
@@ -181,8 +171,8 @@ function renderSnapshot(snap: Snapshot, opts: { resetDiff: boolean }): void {
   }
 }
 
-function fmtHex(v: bigint): string {
-  return '0x' + v.toString(16).padStart(16, '0');
+function fmtHex(v: bigint, wordBytes: number): string {
+  return '0x' + v.toString(16).padStart(wordBytes * 2, '0');
 }
 
 function renderRegisters(snap: Snapshot, resetDiff: boolean): void {
@@ -200,7 +190,7 @@ function renderRegisters(snap: Snapshot, resetDiff: boolean): void {
     name.textContent = reg.name;
     const val = document.createElement('span');
     val.className = 'reg-val';
-    val.textContent = fmtHex(reg.value);
+    val.textContent = fmtHex(reg.value, snap.wordBytes);
     row.append(name, val);
     frag.append(row);
   }
@@ -316,7 +306,43 @@ el.btnRun.addEventListener('click', () => send({ type: 'run' }));
 el.btnStep.addEventListener('click', () => send({ type: 'step' }));
 el.btnReset.addEventListener('click', () => send({ type: 'reset' }));
 
+// ---- architecture selector ----
+function populateArchSelect(): void {
+  const frag = document.createDocumentFragment();
+  for (const a of ARCHES) {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.displayName;
+    frag.append(opt);
+  }
+  el.arch.replaceChildren(frag);
+  el.arch.value = currentArchId;
+}
+
+function switchArch(id: string): void {
+  if (id === currentArchId) return;
+  currentArchId = id;
+  // Wipe per-program UI state, then load this arch's sample program. Clear the
+  // loaded flag before swapping text so the editor's onChange doesn't fire the
+  // "source changed" path against the previous program.
+  state.loaded = false;
+  state.halted = false;
+  state.prevRegs = new Map();
+  editor.setText(getArch(id).defaultProgram);
+  editor.highlightLine(null);
+  clearAsmError();
+  el.registers.replaceChildren();
+  el.flags.replaceChildren();
+  el.console.textContent = '';
+  el.diagnostics.replaceChildren();
+  setStatus(`Switching to ${getArch(id).displayName}…`, 'warn');
+  send({ type: 'select-arch', id });
+}
+
+el.arch.addEventListener('change', () => switchArch(el.arch.value));
+
 // ---- boot ----
+populateArchSelect();
 setStatus('Loading engines…', 'warn');
 updateButtons();
 spawnWorker();

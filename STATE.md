@@ -2,8 +2,9 @@
 
 _Last updated: 2026-05-31. **Phase 2 is COMPLETE.** Read this before starting Phase 3 (Blockly)._
 
-> **ARM32 / multi-arch selector — investigated 2026-05-31, blocked on engines.**
-> See [ARM32 (AArch32) — blocked on engine backends](#arm32-aarch32--blocked-on-engine-backends) below before attempting it.
+> **ARM32 / multi-arch selector — DONE 2026-05-31.** Both engines were re-vendored
+> with the ARM backend and ARM32 now runs end-to-end alongside ARM64 (toolbar arch
+> selector). See [ARM32 (AArch32) — shipped](#arm32-aarch32--shipped) below.
 
 ## Where we are
 
@@ -12,6 +13,9 @@ seam + Web Worker harness are proven headlessly (`npm run proof`) AND now driven
 by a working browser UI. `npx tsc --noEmit` and `npm run build` are both clean.
 
 What works today:
+- **Two architectures, selectable from the toolbar `Arch` dropdown: ARM64 (AArch64)
+  and ARM32 (AArch32).** Switching reloads the matching Unicorn engine and rebuilds
+  the harness; see [ARM32 (AArch32) — shipped](#arm32-aarch32--shipped).
 - Assemble ARM64 text → machine code (Keystone WASM), with clean inline errors.
 - Load into a flat Unicorn memory map, `run` (to exit/end/cap) and `step` (one
   instruction; PC advances 4 bytes).
@@ -105,45 +109,40 @@ guard. The editor seeds with the proof's `Hi\n` write+exit program.
   rendered** — a memory panel is an easy future add.
 - Don't revert the worker loading approach (see the gotcha box above).
 
-## ARM32 (AArch32) — blocked on engine backends
+## ARM32 (AArch32) — shipped
 
-Adding an ARM32 mode + an architecture chooser was attempted on 2026-05-31. The
-**app-side seam is ready**, but the work is **blocked**: both vendored engines are
-**AArch64-only builds** and reject `ARM` at open time.
+ARM32 (A32/ARM mode) runs end-to-end alongside ARM64, selectable from the toolbar
+`Arch` dropdown. Verified headlessly via `npm run proof:arm32` (assemble + run the
+`Hi\n` write/exit sample, single-step, assemble-error path) and through `npm run build`.
 
-| Engine | Result | How verified |
-|--------|--------|--------------|
-| Keystone (WASM) | no ARM backend | `ks_arch_supported(KS_ARCH_ARM=1)` → `0`; `ks_open(ARM)` → rc 2 (`KS_ERR_ARCH`). Built with `LLVM_TARGETS_TO_BUILD="AArch64"` (see `scripts/build-keystone-wasm.sh`). |
-| Unicorn (asm.js) | no ARM backend | `uc_open(ARCH_ARM)` → `UC_ERR_ARCH`. The file is `unicorn-aarch64.min.js`. |
+**What unblocked it — both engines re-vendored with the ARM backend:**
+- **Keystone** — rebuilt with `LLVM_TARGETS_TO_BUILD="AArch64;ARM"` (see
+  `scripts/build-keystone-wasm.sh`). The WASM grew ~832 KB → ~1.4 MB. One module
+  serves both arches (Keystone is arch-independent at the JS level; the profile
+  passes `KS_ARCH_ARM` + `KS_MODE_ARM`).
+- **Unicorn** — vendored a separate single-arch ARM build, `unicorn-arm.min.js`,
+  next to `unicorn-aarch64.min.js`. Each AlexAltea build is single-arch and reassigns
+  the global `uc`, so switching arch means loading the matching file and rebuilding
+  the harness against it.
 
-**Gotcha that wastes time:** the `ARCH_ARM` / `ARM_REG_*` constants *are* present in
-both JS namespaces — they're enum values from the headers and say nothing about which
-backends were compiled in. Don't trust the constants; the engines reject `ARM` at
-`*_open`.
+**Gotcha that still applies:** the `ARCH_ARM` / `ARM_REG_*` constants are present in
+the namespace regardless of which backends were compiled in — they say nothing about
+support. The headless proof opens a CPU (`new uc.Unicorn(ARCH_ARM, MODE_ARM)`) to
+prove the backend is really there, since `*_open` is what rejects a missing backend.
 
-**To actually unblock ARM32, BOTH binaries must be re-vendored with the ARM backend:**
-- **Keystone** — rerun `scripts/build-keystone-wasm.sh` with
-  `LLVM_TARGETS_TO_BUILD="AArch64;ARM"` (needs emsdk under `.build/emsdk` + network +
-  a long LLVM build; `emcc` is not currently on PATH and `.build/` is absent).
-- **Unicorn** — the hard one. Per the README "Unicorn 2 → WASM wall", Unicorn 2 can't
-  be compiled to WASM at all, so we're pinned to AlexAltea's Unicorn **1.x** asm.js.
-  A **multi-arch** (ARM+AArch64) build of that is required — re-sourcing or rebuilding
-  the old asm.js toolchain, which may not be feasible.
-
-**Seam prep already landed (engine-agnostic, safe, ARM64 unchanged):** the 64-bit
-register-width assumption was generalized so a 32-bit profile drops in cleanly:
-- `readRegExact(cpu, regId, sizeBytes = 8)` — width is now a parameter.
-- `ArchProfile.wordBytes` and `Snapshot.wordBytes` (8 = AArch64, 4 = AArch32); the
-  harness reads registers at `profile.wordBytes` and the snapshot carries it for the
-  UI to pad hex correctly. `Arm64Profile` sets `wordBytes: 8`. `npm run proof` + `tsc`
-  stay green.
-
-**When the engines are ready,** the remaining work is purely additive: an
-`Arm32Profile` (KS_ARCH_ARM + KS_MODE_ARM; Unicorn `ARCH_ARM`/`MODE_ARM`; regs
-r0–r12/sp/lr/pc + CPSR NZCV at bits 31–28; EABI syscalls — number in `r7`, args
-`r0`–`r6`, `write`=4 / `exit`=1 / `exit_group`=248; `wordBytes: 4`; fixed-width
-4-byte source map), a small arch registry, a `select-arch` worker message, and a
-`<select>` in the toolbar. None of that touches the worker/protocol/harness contract.
+**How it's wired (all additive — the worker/protocol/harness contract was untouched):**
+- `src/arch/registry.ts` — the `ARCHES` list: id, displayName, `unicornFile`,
+  `createProfile`, and a per-arch `defaultProgram`. Adding an arch = one entry here
+  + a vendored engine + a profile.
+- `src/arch/arm32.ts` — `Arm32Profile`: `KS_ARCH_ARM` + `KS_MODE_ARM`; Unicorn
+  `ARCH_ARM`/`MODE_ARM`; regs r0–r12/sp/lr/pc + CPSR NZCV at bits 31–28; EABI
+  syscalls (number in `r7`, args `r0`–`r6`; `write`=4 / `exit`=1 / `exit_group`=248);
+  `wordBytes: 4`; fixed-width 4-byte source map.
+- `select-arch` worker message (`src/worker/emulator.worker.ts`): loads Keystone
+  once, (re)loads the arch's Unicorn engine, rebuilds the harness. Toolbar `<select>`
+  in `index.html`; `switchArch` in `src/main.ts` wipes per-program UI state and seeds
+  the new arch's sample. Hex padding honors `snapshot.wordBytes` (32-bit regs show as
+  8 digits).
 
 ## NEXT STEPS — Phase 3: Blockly visual editor
 

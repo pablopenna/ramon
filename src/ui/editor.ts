@@ -63,6 +63,15 @@ export class SourceEditor {
     return this.view.state.doc.toString();
   }
 
+  /** Replace the whole document (e.g. when switching architecture) and clear the
+   *  highlights, which referred to the previous program. */
+  setText(text: string): void {
+    this.view.dispatch({
+      changes: { from: 0, to: this.view.state.doc.length, insert: text },
+      effects: [setActiveLine.of(null), setErrorLine.of(null)],
+    });
+  }
+
   /** Highlight the given 0-based source line (or clear with null). */
   highlightLine(zeroBased: number | null): void {
     this.view.dispatch({ effects: setActiveLine.of(zeroBased) });

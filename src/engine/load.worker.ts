@@ -30,16 +30,28 @@ async function loadGlobalScript(url: string): Promise<void> {
   globalEval(await res.text());
 }
 
-export async function loadEngines(): Promise<LoadedEngines> {
-  // Unicorn asm.js -> global `uc`; Keystone WASM glue -> global factory `MKeystone`.
-  await loadGlobalScript(`${VENDOR_BASE}/unicorn-aarch64.min.js`);
+/** Load the (architecture-independent) Keystone WASM module once. */
+export async function loadKeystone(): Promise<KeystoneModule> {
   await loadGlobalScript(`${VENDOR_BASE}/keystone-core.js`);
-
-  const g = self as unknown as { uc?: UnicornNamespace; MKeystone?: KeystoneFactory };
-  if (!g.uc) throw new Error('Unicorn failed to load (global `uc` missing)');
+  const g = self as unknown as { MKeystone?: KeystoneFactory };
   if (!g.MKeystone) throw new Error('Keystone failed to load (global `MKeystone` missing)');
-
   // Point Emscripten at the .wasm next to the glue.
-  const ks = await g.MKeystone({ locateFile: (file: string) => `${VENDOR_BASE}/${file}` });
-  return { ks, uc: g.uc };
+  return g.MKeystone({ locateFile: (file: string) => `${VENDOR_BASE}/${file}` });
+}
+
+/** Load a specific (single-arch) Unicorn asm.js build; returns its `uc` namespace.
+ *  Each AlexAltea build reassigns the global `uc`, so switching architecture is a
+ *  matter of loading the matching file and rebuilding the harness against it. */
+export async function loadUnicorn(file: string): Promise<UnicornNamespace> {
+  await loadGlobalScript(`${VENDOR_BASE}/${file}`);
+  const g = self as unknown as { uc?: UnicornNamespace };
+  if (!g.uc) throw new Error(`Unicorn failed to load (global \`uc\` missing) from ${file}`);
+  return g.uc;
+}
+
+/** Convenience: load the default (ARM64) pair. */
+export async function loadEngines(): Promise<LoadedEngines> {
+  const uc = await loadUnicorn('unicorn-aarch64.min.js');
+  const ks = await loadKeystone();
+  return { ks, uc };
 }

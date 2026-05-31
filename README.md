@@ -10,11 +10,12 @@
 **N** - Emulator for teaching
 
 ## Description
-cpu-emulator — Keystone + Unicorn AArch64 round-trip (in-browser)
+cpu-emulator — Keystone + Unicorn ARM round-trip (in-browser)
 
-A browser-based ARM64 (AArch64) assembly learning environment: write assembly,
-assemble it to machine code, and run/single-step it under emulation — entirely
-client-side, no backend, no native execution.
+A browser-based ARM assembly learning environment (ARM64/AArch64 and ARM32/AArch32,
+selectable in the toolbar): write assembly, assemble it to machine code, and
+run/single-step it under emulation — entirely client-side, no backend, no native
+execution.
 
 ---
 
@@ -49,8 +50,10 @@ source text ──► Keystone (WASM) ──► machine-code bytes
 
 Everything architecture-specific lives behind one interface
 (`src/arch/ArchProfile.ts`) so adding x86 later is "write a new profile," not
-"rewrite the app." Only `Arm64Profile` (`src/arch/arm64.ts`) exists today; the
-harness/worker/UI talk **only** to the interface. A profile bundles:
+"rewrite the app." Two profiles exist today — `Arm64Profile` (`src/arch/arm64.ts`)
+and `Arm32Profile` (`src/arch/arm32.ts`) — listed in `src/arch/registry.ts` and
+selectable from the toolbar `Arch` dropdown; the harness/worker/UI talk **only** to
+the interface. A profile bundles:
 
 - Keystone arch/mode + Unicorn arch/mode constants.
 - The memory map (regions + initial SP).
@@ -78,6 +81,14 @@ Handled via `UC_HOOK_INTR` on `svc`. Number in **x8**, args in **x0–x5**.
   the console (fd ignored — all output goes to the console panel).
 - `exit` (**#93**) / `exit_group` (**#94**): stop the emulator with the given code.
 - Unknown syscalls: reported in `diagnostics`, never crash.
+
+### Syscall ABI (ARM32 Linux EABI)
+
+The ARM32 profile uses the same flat memory map (regions at the same bases) and the
+EABI convention: number in **r7**, args in **r0–r6**, `svc #0`. Same set:
+`write` (**#4**), `exit` (**#1**) / `exit_group` (**#248**); registers are 32-bit
+(`wordBytes: 4`, hex shown as 8 digits), CPSR provides NZCV at bits 31–28. The
+ARM32 round-trip is verified by `npm run proof:arm32`.
 
 ### PC → source mapping
 

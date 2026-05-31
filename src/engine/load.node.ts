@@ -21,18 +21,28 @@ export interface LoadedEngines {
   uc: UnicornNamespace;
 }
 
-export async function loadEngines(): Promise<LoadedEngines> {
+/** Load the (architecture-independent) Keystone WASM module once. */
+export async function loadKeystone(): Promise<KeystoneModule> {
   // Emscripten's env detection needs `require` visible as a global to pick its
   // NODE branch (otherwise SHELL mode references an undefined `print`).
   (globalThis as { require?: unknown }).require = require;
-
-  const unicornSrc = readFileSync(resolve(root, 'vendor', 'unicorn-aarch64.min.js'), 'utf8');
-  vm.runInThisContext(unicornSrc, { filename: 'unicorn-aarch64.min.js' });
-  const uc = (globalThis as unknown as { uc: UnicornNamespace }).uc;
-  if (!uc) throw new Error('Unicorn failed to load (global `uc` missing)');
-
   const MKeystone = require(resolve(root, 'vendor-wasm', 'keystone-core.js')) as KeystoneFactory;
-  const ks = await MKeystone();
+  return MKeystone();
+}
 
+/** Load a specific (single-arch) Unicorn asm.js build; returns its `uc` namespace. */
+export async function loadUnicorn(file: string): Promise<UnicornNamespace> {
+  (globalThis as { require?: unknown }).require = require;
+  const unicornSrc = readFileSync(resolve(root, 'vendor', file), 'utf8');
+  vm.runInThisContext(unicornSrc, { filename: file });
+  const uc = (globalThis as unknown as { uc?: UnicornNamespace }).uc;
+  if (!uc) throw new Error(`Unicorn failed to load (global \`uc\` missing) from ${file}`);
+  return uc;
+}
+
+/** Convenience: load the default (ARM64) pair. */
+export async function loadEngines(): Promise<LoadedEngines> {
+  const uc = await loadUnicorn('unicorn-aarch64.min.js');
+  const ks = await loadKeystone();
   return { ks, uc };
 }

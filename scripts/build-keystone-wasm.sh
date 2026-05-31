@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Keystone -> true WebAssembly (AArch64 backend only), MODULARIZE factory
+# Build Keystone -> true WebAssembly (AArch64 + ARM backends), MODULARIZE factory
 # named `MKeystone`, matching the runtime methods the wrapper uses.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,11 +10,11 @@ BUILD="$SRC/build-wasm"
 mkdir -p "$BUILD"
 cd "$BUILD"
 
-# Configure: static lib only, just the AArch64 LLVM backend to keep size down.
+# Configure: static lib only, AArch64 + ARM LLVM backends (ARM32 support).
 emcmake cmake \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DBUILD_LIBS_ONLY=ON \
-  -DLLVM_TARGETS_TO_BUILD="AArch64" \
+  -DLLVM_TARGETS_TO_BUILD="AArch64;ARM" \
   -DKEYSTONE_BUILD_STATIC_RUNTIME=OFF \
   -G "Unix Makefiles" "$SRC"
 

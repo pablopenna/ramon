@@ -48,11 +48,12 @@ export type WorkerRequest =
   | { type: 'load'; source: string }
   | { type: 'step' }
   | { type: 'run' }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  | { type: 'select-arch'; id: string }; // switch architecture (reloads engines)
 
 // ---- worker -> main ----
 export type WorkerResponse =
-  | { type: 'ready' } // worker booted, engines loaded
+  | { type: 'ready'; archId?: string } // worker booted / arch switched, engines loaded
   | { type: 'loaded'; bytes: number; count: number; snapshot: Snapshot } // assembled OK
   | {
       type: 'assemble-error';
