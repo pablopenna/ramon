@@ -205,6 +205,7 @@ export class EmulatorHarness {
     if (!cpu) {
       return {
         registers: [],
+        wordBytes: profile.wordBytes,
         flags: null,
         flagsName: null,
         pc: 0,
@@ -218,10 +219,11 @@ export class EmulatorHarness {
       };
     }
 
-    // Exact 64-bit values (reg_read_i64 loses precision above 2^53).
+    // Exact native-width values (reg_read_i64 loses precision above 2^53, and
+    // over-reading a 32-bit register would pick up garbage high bytes).
     const registers = profile.registers.map((r) => ({
       name: r.name,
-      value: readRegExact(cpu, r.regId),
+      value: readRegExact(cpu, r.regId, profile.wordBytes),
     }));
 
     let flags: Record<string, 0 | 1> | null = null;
@@ -243,6 +245,7 @@ export class EmulatorHarness {
 
     return {
       registers,
+      wordBytes: profile.wordBytes,
       flags,
       flagsName,
       pc,

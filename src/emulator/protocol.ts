@@ -27,6 +27,8 @@ export type StopReason =
 
 export interface Snapshot {
   registers: RegisterValue[];
+  /** Native register width in bytes (8 = AArch64, 4 = AArch32). Drives hex padding. */
+  wordBytes: number;
   flags: Record<string, 0 | 1> | null;
   flagsName: string | null;
   pc: number;

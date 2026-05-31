@@ -73,6 +73,10 @@ export interface ArchProfile {
 
   readonly memoryMap: MemoryMap;
 
+  /** Native register width in bytes (8 for AArch64, 4 for AArch32). Drives the
+   *  exact register readback and the display formatting. */
+  readonly wordBytes: number;
+
   /** Registers to display, in order. */
   readonly registers: RegisterSpec[];
   /** Unicorn register id of the program counter (set to code base on load, read each step). */

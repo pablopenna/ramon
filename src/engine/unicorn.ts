@@ -35,7 +35,9 @@ export interface UnicornNamespace {
   Unicorn: UnicornInstanceCtor;
 
   ARCH_ARM64: number;
+  ARCH_ARM: number;
   MODE_ARM: number;
+  MODE_LITTLE_ENDIAN: number;
 
   PROT_NONE: number;
   PROT_READ: number;
@@ -46,17 +48,20 @@ export interface UnicornNamespace {
   HOOK_INTR: number;
   HOOK_CODE: number;
 
-  // Register ids (a subset; the build exposes the full ARM64_REG_* set).
+  // Register ids (a subset; the build exposes the full ARM64_REG_* / ARM_REG_* sets).
   [key: `ARM64_REG_${string}`]: number;
+  [key: `ARM_REG_${string}`]: number;
 }
 
 /**
- * Read a register as an exact unsigned 64-bit value (BigInt), avoiding the
- * precision loss of reg_read_i64. reg_read(regId, 8) returns 8 little-endian
- * bytes; we recombine them into a BigInt.
+ * Read a register as an exact unsigned integer (BigInt), avoiding the precision
+ * loss of reg_read_i64. reg_read(regId, sizeBytes) returns that many
+ * little-endian bytes; we recombine them into a BigInt. `sizeBytes` must match
+ * the architecture's register width (8 for AArch64, 4 for AArch32) — reading
+ * more bytes than the register holds yields garbage high bytes in this build.
  */
-export function readRegExact(cpu: UnicornInstance, regId: number): bigint {
-  const bytes = cpu.reg_read(regId, 8);
+export function readRegExact(cpu: UnicornInstance, regId: number, sizeBytes = 8): bigint {
+  const bytes = cpu.reg_read(regId, sizeBytes);
   let v = 0n;
   for (let i = bytes.length - 1; i >= 0; i--) {
     v = (v << 8n) | BigInt(bytes[i]);

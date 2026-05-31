@@ -64,6 +64,7 @@ export function createArm64Profile(uc: UnicornNamespace): ArchProfile {
     keystone: { arch: KS_ARCH_ARM64, mode: KS_MODE_LE },
     unicorn: { arch: uc.ARCH_ARM64, mode: uc.MODE_ARM },
     memoryMap,
+    wordBytes: 8,
     registers,
     pcRegId: uc.ARM64_REG_PC,
     flags: {

@@ -1,6 +1,9 @@
 # Project state & next steps
 
-_Last updated: 2026-05-30. **Phase 2 is COMPLETE.** Read this before starting Phase 3 (Blockly)._
+_Last updated: 2026-05-31. **Phase 2 is COMPLETE.** Read this before starting Phase 3 (Blockly)._
+
+> **ARM32 / multi-arch selector — investigated 2026-05-31, blocked on engines.**
+> See [ARM32 (AArch32) — blocked on engine backends](#arm32-aarch32--blocked-on-engine-backends) below before attempting it.
 
 ## Where we are
 
@@ -101,6 +104,46 @@ guard. The editor seeds with the proof's `Hi\n` write+exit program.
 - Memory window (`snapshot.memory`, the `data` region) is captured but **not yet
   rendered** — a memory panel is an easy future add.
 - Don't revert the worker loading approach (see the gotcha box above).
+
+## ARM32 (AArch32) — blocked on engine backends
+
+Adding an ARM32 mode + an architecture chooser was attempted on 2026-05-31. The
+**app-side seam is ready**, but the work is **blocked**: both vendored engines are
+**AArch64-only builds** and reject `ARM` at open time.
+
+| Engine | Result | How verified |
+|--------|--------|--------------|
+| Keystone (WASM) | no ARM backend | `ks_arch_supported(KS_ARCH_ARM=1)` → `0`; `ks_open(ARM)` → rc 2 (`KS_ERR_ARCH`). Built with `LLVM_TARGETS_TO_BUILD="AArch64"` (see `scripts/build-keystone-wasm.sh`). |
+| Unicorn (asm.js) | no ARM backend | `uc_open(ARCH_ARM)` → `UC_ERR_ARCH`. The file is `unicorn-aarch64.min.js`. |
+
+**Gotcha that wastes time:** the `ARCH_ARM` / `ARM_REG_*` constants *are* present in
+both JS namespaces — they're enum values from the headers and say nothing about which
+backends were compiled in. Don't trust the constants; the engines reject `ARM` at
+`*_open`.
+
+**To actually unblock ARM32, BOTH binaries must be re-vendored with the ARM backend:**
+- **Keystone** — rerun `scripts/build-keystone-wasm.sh` with
+  `LLVM_TARGETS_TO_BUILD="AArch64;ARM"` (needs emsdk under `.build/emsdk` + network +
+  a long LLVM build; `emcc` is not currently on PATH and `.build/` is absent).
+- **Unicorn** — the hard one. Per the README "Unicorn 2 → WASM wall", Unicorn 2 can't
+  be compiled to WASM at all, so we're pinned to AlexAltea's Unicorn **1.x** asm.js.
+  A **multi-arch** (ARM+AArch64) build of that is required — re-sourcing or rebuilding
+  the old asm.js toolchain, which may not be feasible.
+
+**Seam prep already landed (engine-agnostic, safe, ARM64 unchanged):** the 64-bit
+register-width assumption was generalized so a 32-bit profile drops in cleanly:
+- `readRegExact(cpu, regId, sizeBytes = 8)` — width is now a parameter.
+- `ArchProfile.wordBytes` and `Snapshot.wordBytes` (8 = AArch64, 4 = AArch32); the
+  harness reads registers at `profile.wordBytes` and the snapshot carries it for the
+  UI to pad hex correctly. `Arm64Profile` sets `wordBytes: 8`. `npm run proof` + `tsc`
+  stay green.
+
+**When the engines are ready,** the remaining work is purely additive: an
+`Arm32Profile` (KS_ARCH_ARM + KS_MODE_ARM; Unicorn `ARCH_ARM`/`MODE_ARM`; regs
+r0–r12/sp/lr/pc + CPSR NZCV at bits 31–28; EABI syscalls — number in `r7`, args
+`r0`–`r6`, `write`=4 / `exit`=1 / `exit_group`=248; `wordBytes: 4`; fixed-width
+4-byte source map), a small arch registry, a `select-arch` worker message, and a
+`<select>` in the toolbar. None of that touches the worker/protocol/harness contract.
 
 ## NEXT STEPS — Phase 3: Blockly visual editor
 
