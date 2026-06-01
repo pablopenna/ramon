@@ -143,10 +143,20 @@ the map from that point — acceptable for a teaching sandbox.
 
 ### Execution guards
 
-Infinite loops are expected. `run` is bounded by an **instruction-count cap**
-(200 000) — the only in-engine guard, because this asm.js Unicorn can't honor
-`emu_start`'s µs timeout (it needs `pthread_sigmask`). Wall-clock protection
-comes from the worker: the main thread can terminate a hung worker.
+Infinite loops are expected. `run` is bounded by two caps:
+
+- **Instruction-count cap (200 000):** passed as the fourth argument to
+  `emu_start`. The only in-engine guard, because this asm.js Unicorn build can't
+  honor `emu_start`'s µs timeout (it needs `pthread_sigmask`). Wall-clock
+  protection comes from the worker: the main thread can terminate a hung worker.
+
+- **Console output cap (16 384 bytes):** enforced in the `write` syscall handler.
+  The ARM32 asm.js Unicorn build crashes ("Runtime.functionPointers[index] is not
+  a function") after roughly 7 000 `HOOK_INTR` callback invocations — well before
+  the 200 000-instruction cap would fire in a tight write loop. Capping console
+  output at 16 KB (the point where ~5 000 write syscalls have been made) stops
+  emulation cleanly before the asm.js runtime hits that limit. Both caps report
+  `stopReason: 'cap'` and leave the emulator in a resumable state.
 
 ### Build / run
 

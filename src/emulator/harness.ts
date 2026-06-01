@@ -18,6 +18,10 @@ import type { MemoryWindow, Snapshot, StopReason } from './protocol.ts';
  *  comes from the main thread, which can terminate a hung worker. */
 const DEFAULT_INSTRUCTION_CAP = 200_000;
 const EMU_TIMEOUT_US = 0;
+/** The ARM32 asm.js Unicorn build crashes ("Runtime.functionPointers[index] is
+ *  not a function") after ~7 000 HOOK_INTR callbacks. Cap console output well
+ *  below that threshold so we stop cleanly instead of crashing. */
+const DEFAULT_CONSOLE_BYTE_CAP = 16_384;
 /** How many bytes of each memory region to include in a snapshot. */
 const MEMORY_WINDOW_BYTES = 256;
 
@@ -45,6 +49,7 @@ export class EmulatorHarness {
   private readonly uc: UnicornNamespace;
   private readonly profile: ArchProfile;
   private readonly instructionCap: number;
+  private readonly consoleByteCap: number;
 
   private cpu: UnicornInstance | null = null;
   private source = '';
@@ -64,12 +69,13 @@ export class EmulatorHarness {
     ksModule: KeystoneModule,
     uc: UnicornNamespace,
     profile: ArchProfile,
-    opts: { instructionCap?: number } = {},
+    opts: { instructionCap?: number; consoleByteCap?: number } = {},
   ) {
     this.uc = uc;
     this.profile = profile;
     this.ks = new Keystone(ksModule, profile.keystone.arch, profile.keystone.mode);
     this.instructionCap = opts.instructionCap ?? DEFAULT_INSTRUCTION_CAP;
+    this.consoleByteCap = opts.consoleByteCap ?? DEFAULT_CONSOLE_BYTE_CAP;
   }
 
   /** Assemble `source`, build a fresh CPU, and load the code. */
@@ -284,9 +290,23 @@ export class EmulatorHarness {
         const decoded = profile.decodeSyscall(intno, ctx);
         const action = profile.executeSyscall(decoded, ctx);
         switch (action.kind) {
-          case 'output':
-            this.consoleBuffer += action.text;
+          case 'output': {
+            const remaining = this.consoleByteCap - this.consoleBuffer.length;
+            if (remaining <= 0) break; // already capped; emu_stop() was called
+            if (action.text.length <= remaining) {
+              this.consoleBuffer += action.text;
+            } else {
+              this.consoleBuffer += action.text.slice(0, remaining);
+              this.consoleBuffer += '\n[output truncated]';
+              this.halted = true;
+              this.stopReason = 'cap';
+              this.note(
+                `Output cap reached (${this.consoleByteCap} bytes) — possible infinite loop. Still resumable.`,
+              );
+              handle.emu_stop();
+            }
             break;
+          }
           case 'exit':
             this.halted = true;
             this.exitCode = action.code;
