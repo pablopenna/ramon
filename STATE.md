@@ -62,9 +62,11 @@ worker uses.
 | `src/worker/emulator.worker.ts` | browser worker = thin protocol transport over the harness |
 | `index.html` + `src/main.ts` | **Phase 2 UI** — toolbar, panels, worker plumbing, wall-clock guard |
 | `src/ui/editor.ts` | CodeMirror 6 wrapper + current-line highlight |
-| `src/ui/panels.ts` | sidebar layout — collapse/reorder/resize + `localStorage` (`ramon.layout.v1`) |
+| `src/ui/layout/model.ts` | the layout state machine — pure, DOM-free, provable in Node |
+| `src/ui/panels.ts` | `PanelDock` — the DOM half: zones, gestures, `localStorage` (`ramon.layout.v2`) |
 | `src/style.css` | UI styling |
 | `scripts/headless-proof.ts` | the Node proof (`npm run proof`) |
+| `scripts/layout-proof.ts` | the layout-model proof (`npm run proof:layout`) |
 | `public/vendor/*` | the vendored engines, served as static assets |
 
 Design rationale lives in `README.md` (Architecture section) and `CLAUDE.md`.
@@ -96,18 +98,42 @@ register panel (hex + changed-register highlight), NZCV flags, cumulative consol
 diagnostics, inline assemble errors, current-line highlight, and the wall-clock
 guard. The editor seeds with the proof's `Hi\n` write+exit program.
 
-The three sidebar panels are collapsible (click the header), reorderable (grip
-drag or ▲/▼) and resizable (drag the splitter between two expanded panels;
-arrow keys work too, double-click evens the pair). `↺` in the sidebar bar
-restores the defaults. Layout persists in `localStorage['ramon.layout.v1']`;
-`src/ui/panels.ts` discovers panels from `[data-panel]` + `data-default-weight`
-in the markup, so adding a panel needs no code change.
+### The panel workbench
+
+**Everything is a panel, including the editor.** Three zones: `main` (exactly one
+panel, always), plus a `right` and a `bottom` dock holding 0..n each — either may
+be emptied, and then collapses away. Panels collapse (click the header), reorder
+(grip drag or ▲/▼, ◀/▶ in the bottom dock), move between docks (`⤵`/`⤴` or drag),
+and any panel can be promoted to main (`◱`, or drag onto the main area and
+release). Splitters resize both panel pairs and the docks themselves; arrow keys
+and double-click work on a focused splitter. `↺` in the toolbar resets.
+
+Two invariants carry the design, and neither should be relaxed:
+
+1. **Exactly one main panel.** Promotion *swaps* — the outgoing main panel takes
+   the exact slot the promoted one vacated — so no code path can empty the main
+   zone. That is why the main panel has no collapse/reorder/dock/drag controls.
+2. **Sizes are never pixels.** Panel sizes are weights within their dock, dock
+   sizes are fractions of the window, so a layout survives a change of monitor.
+
+`src/ui/layout/model.ts` is the state machine (pure, DOM-free — hence
+`npm run proof:layout`); `src/ui/panels.ts` (`PanelDock`) is the DOM half and
+goes model-first: compute the next layout, then render it. Panels are discovered
+from `[data-panel]` + `data-default-weight` + *the zone the section is authored
+in*, so adding a panel is still a markup-only change. Persists in
+`localStorage['ramon.layout.v2']`, repairing a corrupt blob rather than dropping it.
+
+Drag detail worth keeping: **promotion happens on release, not on crossing.** The
+main zone sits between the two docks, so every right→bottom drag passes over it;
+promoting on the way through would make the docks unreachable from each other.
 
 ### How to run / re-verify
 - `npm run dev` → open the printed URL. Default program: Assemble → Run prints
   `Hi\n`; Reset then Step to watch the highlight advance.
-- `npm run build` (tsc + vite) and `npm run proof` both pass.
-- Browser-tested in Chrome via Playwright (dev + `npm run preview`).
+- `npm run build` (tsc + vite), `npm run proof` and `npm run proof:layout` all pass.
+- Browser-tested in Chrome via Playwright (dev + `npm run preview`), including the
+  pointer gestures: cross-dock grip drags, drag-to-promote, both splitter kinds,
+  draining each dock, reload persistence and a corrupt saved blob.
 
 ### Notes for whoever touches this next
 - BigInt is structured-cloneable, so register values cross the worker boundary fine.

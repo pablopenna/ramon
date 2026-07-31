@@ -85,4 +85,11 @@ export class SourceEditor {
   focus(): void {
     this.view.focus();
   }
+
+  /** Re-measure after the layout moved or resized the editor. Needed because
+   *  the editor is a panel: collapsing it sets display:none (CodeMirror then
+   *  measures 0), and moving it between zones detaches and re-inserts its DOM. */
+  refresh(): void {
+    this.view.requestMeasure();
+  }
 }

@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "proof": "tsx scripts/headless-proof.ts",
     "proof:arm32": "tsx scripts/headless-proof-arm32.ts",
+    "proof:layout": "tsx scripts/layout-proof.ts",
     "spike:test": "node verify.js && node verify-keystone-wasm.js && node verify-wasm.js"
   },
   "dependencies": {

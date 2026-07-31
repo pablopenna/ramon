@@ -124,25 +124,97 @@ header .sub {
   color: var(--err);
 }
 
-main {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 22rem;
-  min-height: 0;
+.toolbar .icon-button {
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.35rem 0.55rem;
+  color: var(--muted);
+  background: none;
 }
 
-.left,
-.right {
+.toolbar .icon-button:hover {
+  color: var(--fg);
+}
+
+/* Zones ---------------------------------------------------------------------
+   #workbench is a flex row of [.col-main][splitter][#zone-right]; .col-main is
+   a flex column of [#zone-main][splitter][#zone-bottom]. Each dock's size is a
+   FRACTION of its own flex parent — the same box `calc(var(--x) * 100%)`
+   resolves against — written inline by src/ui/panels.ts. Not pixels, for the
+   same reason panel weights aren't: a layout saved on a big monitor has to
+   restore sensibly on a small one. */
+
+#workbench {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  /* Seed values; panels.ts overwrites both from the saved layout on boot. */
+  --right-frac: 0.25;
+  --bottom-frac: 0.3;
+}
+
+.col-main {
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 
-.left {
-  border-right: 1px solid var(--border);
+.zone {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
 }
 
-#asm-error {
+.zone-main {
+  flex: 1 1 0;
+}
+
+#zone-right {
+  flex: 0 0 auto;
+  width: calc(var(--right-frac) * 100%);
+}
+
+#zone-bottom {
+  flex: 0 0 auto;
+  height: calc(var(--bottom-frac) * 100%);
+}
+
+/* An empty dock disappears completely, taking its zone splitter with it, so the
+   remaining zones get the whole window. */
+.zone.is-empty,
+.panel-splitter.is-empty {
+  display: none;
+}
+
+/* …except mid-drag, where an empty dock is precisely the thing you want to drop
+   into: display:none leaves no rectangle to aim at. */
+body.is-dragging-panel .zone.is-empty {
+  display: flex;
+  outline: 1px dashed var(--accent);
+  outline-offset: -3px;
+}
+
+body.is-dragging-panel #zone-right.is-empty {
+  width: 4rem;
+}
+
+body.is-dragging-panel #zone-bottom.is-empty {
+  height: 3rem;
+}
+
+/* Dropping on the main zone promotes, so — unlike a dock, which reorders live
+   under the pointer — it needs its own cue that a release here would land. */
+.zone-main.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* Sits inside the editor panel, between its header and body, so the banner
+   follows the editor into whichever zone it is docked. */
+.panel-notice {
+  flex: 0 0 auto;
   background: rgba(248, 81, 73, 0.12);
   border-bottom: 1px solid var(--err);
   color: var(--err);
@@ -171,12 +243,9 @@ main {
   font-style: italic;
 }
 
-#editor {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
+/* #editor IS the editor panel's .panel-body — flex and overflow come from that
+   class. Nothing may pin a size here, or the panel weights stop describing
+   reality (same rule as #console / #diagnostics below). */
 .cm-editor {
   height: 100%;
   font-family: var(--mono);
@@ -191,62 +260,34 @@ main {
   background: rgba(248, 81, 73, 0.2) !important;
 }
 
-/* Panels on the right ------------------------------------------------------
-   Sizing model: every expanded panel is `flex: <weight> 1 0`, with flex-grow
-   written inline by src/ui/panels.ts. flex-basis MUST stay 0 — with `auto`,
-   content height leaks into the distribution and the ratios stop matching the
-   weights. Collapsed panels fall back to their header height. */
+/* Panels --------------------------------------------------------------------
+   Sizing model: every expanded panel is `flex: <weight> 1 0` along its dock's
+   axis, with flex-grow written inline by src/ui/panels.ts. flex-basis MUST stay
+   0 — with `auto`, content size leaks into the distribution and the ratios stop
+   matching the weights. Collapsed panels fall back to their header size.
 
-.sidebar-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex: 0 0 auto;
-  padding: 0.35rem 0.4rem 0.35rem 0.8rem;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
+   The right dock stacks vertically, the bottom dock horizontally; .panel-stack-v
+   and .panel-stack-h below are the only places that difference is spelled out. */
 
-.sidebar-bar button {
-  margin-left: auto;
-  font: inherit;
-  font-size: 0.9rem;
-  line-height: 1;
-  color: var(--muted);
-  background: none;
-  border: 0;
-  border-radius: 4px;
-  padding: 0.15rem 0.35rem;
-  cursor: pointer;
-}
-
-.sidebar-bar button:hover {
-  color: var(--fg);
-}
-
-.panel-stack {
-  flex: 1;
-  min-height: 0;
-  display: flex;
+.panel-stack-v {
   flex-direction: column;
   /* Escape hatch for a window too short to hold every header. */
   overflow-y: auto;
+}
+
+.panel-stack-h {
+  flex-direction: row;
+  overflow-x: auto;
 }
 
 .panel {
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
+  min-width: 0;
   min-height: 0;
   /* Keeps a squeezed panel from bleeding its header into its neighbour. */
   overflow: hidden;
-}
-
-.panel:not(.is-collapsed) {
-  min-height: var(--panel-header-h);
 }
 
 .panel.is-collapsed {
@@ -254,10 +295,50 @@ main {
   flex-shrink: 0;
 }
 
+/* Never squeeze an expanded panel past its own header, along whichever axis its
+   dock stacks on. */
+.panel-stack-v > .panel:not(.is-collapsed) {
+  min-height: var(--panel-header-h);
+}
+
+.panel-stack-h > .panel:not(.is-collapsed) {
+  min-width: 6rem;
+}
+
+/* Collapsed in a horizontal dock: the header turns on its side and becomes a
+   narrow title strip, the width equivalent of a collapsed row. */
+.panel-stack-h > .panel.is-collapsed > .panel-header {
+  writing-mode: vertical-rl;
+  height: 100%;
+  padding: 0.5rem 0.3rem;
+}
+
 /* Only where two panels are DOM-adjacent — i.e. exactly where there is no
    splitter drawing the line. Collapsing a panel switches this automatically. */
-.panel + .panel {
+.panel-stack-v > .panel + .panel {
   border-top: 1px solid var(--border);
+}
+
+.panel-stack-h > .panel + .panel {
+  border-left: 1px solid var(--border);
+}
+
+/* The main panel is the one zone that must never be empty, so every control
+   that could vacate or hide it is gone: no collapse, no reorder, no dock, no
+   drag. It changes only by promoting a different panel, which swaps them. */
+.panel.is-main .panel-grip,
+.panel.is-main .panel-main,
+.panel.is-main .panel-dock,
+.panel.is-main .panel-move {
+  display: none;
+}
+
+.panel.is-main .panel-toggle {
+  cursor: default;
+}
+
+.panel.is-main .panel-toggle::before {
+  content: none;
 }
 
 .panel-header {
@@ -326,7 +407,9 @@ main {
   cursor: grabbing;
 }
 
-.panel-move {
+.panel-move,
+.panel-main,
+.panel-dock {
   font: inherit;
   color: var(--muted);
   background: none;
@@ -337,12 +420,21 @@ main {
   cursor: pointer;
 }
 
-.panel-move:hover:not(:disabled) {
+/* ⤵ / ⤴ are drawn lighter than the solid ▲ / ▼ at the same size. */
+.panel-dock {
+  font-size: 1.1em;
+}
+
+.panel-move:hover:not(:disabled),
+.panel-main:hover:not(:disabled),
+.panel-dock:hover:not(:disabled) {
   opacity: 1;
   color: var(--fg);
 }
 
-.panel-move:disabled {
+.panel-move:disabled,
+.panel-main:disabled,
+.panel-dock:disabled {
   opacity: 0.15;
   cursor: default;
 }
@@ -350,13 +442,15 @@ main {
 /* .panel is overflow:hidden, so a positive outline-offset would be clipped. */
 .panel-toggle:focus-visible,
 .panel-move:focus-visible,
-.sidebar-bar button:focus-visible {
+.panel-main:focus-visible,
+.panel-dock:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
 .panel-body {
   flex: 1 1 0;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
 }
@@ -367,11 +461,14 @@ main {
 }
 
 .panel.is-collapsed > .panel-body,
+.panel.is-collapsed > .panel-notice,
 .panel.is-collapsed > .panel-footer {
   display: none;
 }
 
-/* Splitter: a 7px grab target drawing a 1px seam. */
+/* Splitter: a 7px grab target drawing a 1px seam, between two panels in a dock
+   or between a dock and the main zone. .is-vertical is the side-by-side case —
+   the bottom dock's panels, and the right dock's own edge. */
 .panel-splitter {
   flex: 0 0 var(--splitter-h);
   position: relative;
@@ -379,6 +476,10 @@ main {
   cursor: row-resize;
   touch-action: none;
   user-select: none;
+}
+
+.panel-splitter.is-vertical {
+  cursor: col-resize;
 }
 
 .panel-splitter::after {
@@ -390,6 +491,13 @@ main {
   background: var(--border);
 }
 
+.panel-splitter.is-vertical::after {
+  inset: 0 auto 0 50%;
+  width: 1px;
+  height: auto;
+  margin: 0 0 0 -0.5px;
+}
+
 .panel-splitter:hover::after,
 .panel-splitter:focus-visible::after,
 .panel-splitter.is-active::after {
@@ -397,19 +505,35 @@ main {
   height: 2px;
 }
 
+.panel-splitter.is-vertical:hover::after,
+.panel-splitter.is-vertical:focus-visible::after,
+.panel-splitter.is-vertical.is-active::after {
+  width: 2px;
+  height: auto;
+}
+
 .panel-splitter:focus-visible {
   outline: none; /* the thickened ::after line is the focus cue */
 }
 
-body.is-resizing {
+body.is-resizing,
+body.is-dragging-panel {
   user-select: none;
   -webkit-user-select: none;
 }
 
 /* CodeMirror sets cursor:text on .cm-content, which otherwise wins under the
-   pointer mid-drag. */
-body.is-resizing * {
+   pointer mid-gesture. */
+body.is-resizing-row * {
   cursor: row-resize !important;
+}
+
+body.is-resizing-col * {
+  cursor: col-resize !important;
+}
+
+body.is-dragging-panel * {
+  cursor: grabbing !important;
 }
 
 #registers {

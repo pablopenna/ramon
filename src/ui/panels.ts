@@ -1,140 +1,187 @@
-// Layout controller for the right-hand sidebar: collapse, reorder and resize the
-// Registers / Console / Diagnostics panels, and remember the result across
-// reloads. It owns *layout only* — panel content is still rendered straight into
-// #registers / #flags / #console / #diagnostics by main.ts, even while a panel is
-// collapsed (cheap, and it keeps a re-expanded panel correct with no refresh hook).
+// Layout controller for the three-zone workbench: which panel is main, which
+// dock every other panel sits in, plus collapse / reorder / resize and the
+// persistence of all of it. It owns *layout only* — panel content is still
+// rendered straight into #editor / #registers / #flags / #console / #diagnostics
+// by main.ts, even while a panel is collapsed (cheap, and it keeps a re-expanded
+// panel correct with no refresh hook).
+//
+// The state machine lives next door in ./layout/model.ts as pure functions over
+// plain data; this file is the DOM half — elements, pointer gestures, storage.
+// Every mutation here goes model-first: compute the next layout, then render it.
 //
 // Panels are discovered from the DOM ([data-panel] + data-default-weight) rather
-// than from a registry array like ARCHES: a panel carries only a title and a
-// default size, both of which the markup already states, so a second source of
-// truth in TypeScript would just drift. Adding a panel is a markup-only change.
+// than from a registry array like ARCHES: a panel carries only a title, a default
+// size and a default zone, all of which the markup already states, so a second
+// source of truth in TypeScript would just drift. The zone a section is *authored*
+// in is its default zone. Adding a panel is a markup-only change.
 //
-// Sizing model: each expanded panel is `flex: <weight> 1 0` with flex-grow written
-// inline here; collapsed panels get grow 0 and fall back to header height. Weights
-// (not pixel heights) mean a layout saved on a big monitor restores sensibly on a
-// small one, with no resize bookkeeping.
+// Sizing model: each expanded panel is `flex: <weight> 1 0` along its dock's axis,
+// with flex-grow written inline here; collapsed panels get grow 0 and fall back to
+// header size. The docks themselves are sized as a fraction of the workbench,
+// written as --right-frac / --bottom-frac. Neither is stored in pixels, so a layout
+// saved on a big monitor restores sensibly on a small one.
 
-/** Persisted per-panel state. Array order in PanelLayout *is* the visual order. */
-export interface PanelState {
-  id: string;
-  collapsed: boolean;
-  /** Relative share of the space left to expanded panels. Only ratios matter. */
-  weight: number;
+import {
+  clampFraction,
+  clampWeight,
+  defaultLayout,
+  deserialize,
+  moveTo,
+  moveWithin,
+  panelsIn,
+  // Aliased: the class has a `promote` method that delegates to this.
+  promote as promoteMain,
+  serialize,
+  ZONE_IDS,
+  type DiscoveredPanel,
+  type DockLayout,
+  type PanelState,
+  type ZoneFractions,
+  type ZoneId,
+} from './layout/model.ts';
+
+export type { DockLayout, PanelState, ZoneId } from './layout/model.ts';
+
+/** The docks a panel can be sent to — every zone except the singular main. */
+export type DockId = Exclude<ZoneId, 'main'>;
+
+export interface PanelDockElements {
+  /** The workbench root: the pointer captor for drags (the only ancestor that
+   *  survives re-inserting a panel into another zone) and the host for the
+   *  --right-frac / --bottom-frac custom properties. */
+  root: HTMLElement;
+  main: HTMLElement;
+  right: HTMLElement;
+  bottom: HTMLElement;
 }
 
-export type PanelLayout = readonly PanelState[];
-
-export interface PanelSidebarOptions {
-  /** Fired after a *committed* change — collapse, reorder, drag end, reset — and
-   *  never per pointermove frame. */
-  onLayoutChange?: (layout: PanelLayout) => void;
+export interface PanelDockOptions {
+  /** Fired after a *committed* change — collapse, move, promote, drag end,
+   *  resize end, reset — and never per pointermove frame. */
+  onLayoutChange?: (layout: DockLayout) => void;
   /** Defaults to window.localStorage; pass null to disable persistence. */
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
 }
 
-/** A panel's live state plus its DOM. Never leaves this module. */
+/** A panel's DOM. All of its *state* lives in the layout model. */
 interface Panel {
   id: string;
   title: string;
-  defaultWeight: number;
   section: HTMLElement;
   toggle: HTMLButtonElement;
+  makeMain: HTMLButtonElement;
+  dock: HTMLButtonElement;
   up: HTMLButtonElement;
   down: HTMLButtonElement;
   body: HTMLElement;
-  collapsed: boolean;
-  weight: number;
+  grip: HTMLElement | null;
 }
 
-const STORAGE_KEY = 'ramon.layout.v1';
+/** Which way a stack runs / a splitter is dragged. The right dock stacks
+ *  vertically, the bottom dock horizontally, and each dock's own size is
+ *  dragged along the *other* axis — hence two tables below. */
+interface Axis {
+  pos: 'clientX' | 'clientY';
+  size: 'width' | 'height';
+  /** True when the splitter draws a vertical seam, i.e. resizes side by side. */
+  seamVertical: boolean;
+}
+const ALONG_X: Axis = { pos: 'clientX', size: 'width', seamVertical: true };
+const ALONG_Y: Axis = { pos: 'clientY', size: 'height', seamVertical: false };
+
+/** How panels stack *inside* a dock. */
+const STACK_AXIS: Record<DockId, Axis> = { right: ALONG_Y, bottom: ALONG_X };
+/** How the dock itself is resized against the main panel. */
+const ZONE_AXIS: Record<DockId, Axis> = { right: ALONG_X, bottom: ALONG_Y };
+
+/** Reorder-button glyphs and labels, by stack direction. */
+const ARROWS = {
+  right: { up: '▲', down: '▼', upWord: 'up', downWord: 'down' },
+  bottom: { up: '◀', down: '▶', upWord: 'left', downWord: 'right' },
+} as const;
+
+const STORAGE_KEY = 'ramon.layout.v2';
+/** The pre-zones format. It cannot be migrated (it has no notion of a main
+ *  panel or of docks), so it is dropped rather than read. */
+const LEGACY_KEY = 'ramon.layout.v1';
+
 /** How small a drag may squeeze an expanded panel, in px. */
 const MIN_PANEL_PX = 64;
-/** Weight step for arrow-key resizing, in px of intended movement. */
+/** Step for arrow-key resizing, in px of intended movement. */
 const KEY_RESIZE_PX = 12;
-const MIN_WEIGHT = 0.05;
-const MAX_WEIGHT = 100;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
-const clampWeight = (w: number): number => clamp(w, MIN_WEIGHT, MAX_WEIGHT);
 
-export class PanelSidebar {
-  private readonly parent: HTMLElement;
-  private readonly opts: PanelSidebarOptions;
-  private readonly storage: PanelSidebarOptions['storage'];
-  private panels: Panel[];
-  /** Document order, fixed at construction — what reset() returns to. */
-  private readonly discoveryOrder: readonly Panel[];
-  /** Keyed by the id of the panel *below* the splitter, so collapse toggles
-   *  reuse elements instead of churning them. */
+export class PanelDock {
+  private readonly el: PanelDockElements;
+  private readonly opts: PanelDockOptions;
+  private readonly storage: PanelDockOptions['storage'];
+  private readonly panels = new Map<string, Panel>();
+  /** The markup's own layout — what reset() returns to. */
+  private readonly defaults: DockLayout;
+  /** Live state. Held mutable so a resize drag can rewrite weights per frame
+   *  without rebuilding the model; every other mutation replaces the array. */
+  private layout: { panels: PanelState[]; zones: ZoneFractions };
+  /** Keyed by the id of the panel *after* the splitter, so a collapse toggle
+   *  reuses elements instead of churning them. */
   private readonly splitters = new Map<string, HTMLElement>();
+  private readonly zoneSplitters = new Map<DockId, HTMLElement>();
 
-  constructor(parent: HTMLElement, opts: PanelSidebarOptions = {}) {
-    this.parent = parent;
+  constructor(el: PanelDockElements, opts: PanelDockOptions = {}) {
+    this.el = el;
     this.opts = opts;
     this.storage = opts.storage === undefined ? safeLocalStorage() : opts.storage;
-    this.panels = discover(parent);
-    this.discoveryOrder = [...this.panels];
 
-    const saved = loadLayout(this.storage, this.defaults());
-    this.applyLayout(saved);
-    this.applyState();
-    this.syncDom();
-
-    for (const p of this.panels) {
-      p.toggle.addEventListener('click', () => this.setCollapsed(p.id, !p.collapsed));
-      p.up.addEventListener('click', () => this.move(p.id, -1, p.up));
-      p.down.addEventListener('click', () => this.move(p.id, 1, p.down));
-      const grip = p.section.querySelector<HTMLElement>('.panel-grip');
-      grip?.addEventListener('pointerdown', (ev) => this.beginDrag(p, ev));
-    }
+    const discovered = this.discover();
+    this.defaults = defaultLayout(discovered, readDefaultFractions(el));
+    this.layout = mutable(deserialize(this.read(), this.defaults));
+    this.render();
+    this.bindPanels();
+    this.bindZoneSplitters();
   }
 
-  getLayout(): PanelLayout {
-    return this.panels.map((p) => ({ id: p.id, collapsed: p.collapsed, weight: p.weight }));
+  // ---- public API ----
+
+  getLayout(): DockLayout {
+    return { panels: this.layout.panels.map((p) => ({ ...p })), zones: { ...this.layout.zones } };
   }
 
   setCollapsed(id: string, collapsed: boolean): void {
-    const p = this.panels.find((x) => x.id === id);
-    if (!p || p.collapsed === collapsed) return;
-    p.collapsed = collapsed;
-    // Visual-only: never touches the tree, so no panel's scroll position or the
+    const s = this.stateOf(id);
+    // The main panel may not be collapsed: it would leave a hole where the
+    // whole point of the zone is that something is always in it.
+    if (!s || s.zone === 'main' || s.collapsed === collapsed) return;
+    s.collapsed = collapsed;
+    // Visual-only: never reorders, so no panel's scroll position and no
     // keyboard focus is disturbed by a collapse.
-    this.applyState();
-    this.syncDom();
+    this.render();
     this.commit();
   }
 
-  /** Move a panel one slot up (-1) or down (+1). `activated` is the button that
+  /** Move a panel one slot within its dock. `activated` is the button that
    *  triggered it, if any — it may end up disabled and silently blur. */
   move(id: string, delta: -1 | 1, activated?: HTMLButtonElement): void {
-    const i = this.panels.findIndex((p) => p.id === id);
-    const j = i + delta;
-    if (i < 0 || j < 0 || j >= this.panels.length) return;
-    const p = this.panels[i]!;
-
-    // Re-inserting a scroll container resets its scrollTop — save it across the
-    // move. This is the only path that detaches a panel.
-    const scroll = p.body.scrollTop;
-    this.panels[i] = this.panels[j]!;
-    this.panels[j] = p;
-    this.applyState();
-    this.syncDom();
-    p.body.scrollTop = scroll;
-
-    // A panel moved to an end disables the button that got it there; the browser
-    // would then blur to <body> and strand the keyboard user.
-    if (activated?.disabled) {
-      const fallback = activated === p.up ? p.down : p.up;
-      (fallback.disabled ? p.toggle : fallback).focus();
-    }
-    this.commit();
+    this.transact(moveWithin(this.layout.panels, id, delta), id, activated);
   }
 
-  /** Back to document order and data-default-weight, everything expanded. */
+  /** Send a panel to the other dock, appended at the end. */
+  toOtherDock(id: string, activated?: HTMLButtonElement): void {
+    const s = this.stateOf(id);
+    if (!s || s.zone === 'main') return;
+    const target: DockId = s.zone === 'right' ? 'bottom' : 'right';
+    const next = moveTo(this.layout.panels, id, target, panelsIn(this.layout.panels, target).length);
+    this.transact(next, id, activated);
+  }
+
+  /** Make a panel the main one; the outgoing main panel takes its old slot. */
+  promote(id: string): void {
+    this.transact(promoteMain(this.layout.panels, id), id);
+  }
+
+  /** Back to the markup's zones, order, sizes, everything expanded. */
   reset(): void {
-    this.applyLayout(this.defaults());
-    this.applyState();
-    this.syncDom();
+    this.layout = mutable(this.defaults);
+    this.render();
     try {
       this.storage?.removeItem(STORAGE_KEY);
     } catch {
@@ -143,160 +190,209 @@ export class PanelSidebar {
     this.opts.onLayoutChange?.(this.getLayout());
   }
 
-  // ---- state application ----
+  // ---- model plumbing ----
 
-  /** Document order + markup defaults, i.e. the layout `reset()` returns to. */
-  private defaults(): PanelState[] {
-    return this.discoveryOrder.map((p) => ({ id: p.id, collapsed: false, weight: p.defaultWeight }));
+  private stateOf(id: string): PanelState | undefined {
+    return this.layout.panels.find((p) => p.id === id);
   }
 
-  private applyLayout(layout: readonly PanelState[]): void {
-    const byId = new Map(this.panels.map((p) => [p.id, p]));
-    this.panels = layout.map((s) => {
-      const p = byId.get(s.id)!;
-      p.collapsed = s.collapsed;
-      p.weight = s.weight;
-      return p;
-    });
+  /** Adopt a layout the model produced, re-render, restore what the DOM move
+   *  destroyed, and persist. No-op when the model refused the change. */
+  private transact(
+    next: readonly PanelState[],
+    id: string,
+    activated?: HTMLButtonElement,
+  ): void {
+    if (next === this.layout.panels) return;
+    const panel = this.panels.get(id);
+    // Re-inserting a scroll container resets its scrollTop — save it across the
+    // move. Reordering is the only path that detaches a panel.
+    const scroll = panel?.body.scrollTop ?? 0;
+    this.layout.panels = next.map((p) => ({ ...p }));
+    this.render();
+    if (panel) panel.body.scrollTop = scroll;
+
+    // A panel moved to an end disables the button that got it there; the browser
+    // would then blur to <body> and strand the keyboard user.
+    if (activated?.disabled && panel) {
+      const alt = [panel.up, panel.down, panel.dock, panel.makeMain, panel.toggle];
+      alt.find((b) => b !== activated && !b.disabled)?.focus();
+    }
+    this.commit();
   }
 
-  /** Classes, ARIA and flex weights. Deliberately does not touch the tree. */
+  // ---- rendering ----
+
+  private render(): void {
+    this.applyState();
+    this.applyFractions();
+    for (const zone of ZONE_IDS) this.syncZone(zone);
+  }
+
+  /** Classes, ARIA, button affordances and flex weights. Never touches the tree. */
   private applyState(): void {
-    const last = this.panels.length - 1;
-    this.panels.forEach((p, i) => {
-      const expanded = !p.collapsed;
-      p.section.classList.toggle('is-collapsed', p.collapsed);
-      p.toggle.setAttribute('aria-expanded', String(expanded));
-      // Always written inline, for every panel: an inline longhand beats the
-      // stylesheet shorthand, so a stale flexGrow would resurrect a collapsed panel.
-      p.section.style.flexGrow = expanded ? String(p.weight) : '0';
-      p.up.disabled = i === 0;
-      p.down.disabled = i === last;
-    });
+    for (const zone of ZONE_IDS) {
+      const list = panelsIn(this.layout.panels, zone);
+      const arrows = zone === 'bottom' ? ARROWS.bottom : ARROWS.right;
+      const last = list.length - 1;
+
+      list.forEach((s, i) => {
+        const p = this.panels.get(s.id)!;
+        const isMain = zone === 'main';
+        const expanded = !s.collapsed;
+
+        p.section.classList.toggle('is-collapsed', s.collapsed);
+        p.section.classList.toggle('is-main', isMain);
+        p.toggle.setAttribute('aria-expanded', String(expanded));
+        // Always written inline, for every panel: an inline longhand beats the
+        // stylesheet shorthand, so a stale flexGrow would resurrect a collapsed
+        // panel — or leave a stale dock weight on a panel that moved zones.
+        p.section.style.flexGrow = isMain ? '1' : expanded ? String(s.weight) : '0';
+
+        // Reorder means up/down in the right dock but left/right in the bottom
+        // one, and the dock button points at whichever dock it isn't in — both
+        // follow the panel around, so they are rewritten rather than authored.
+        p.up.textContent = arrows.up;
+        p.down.textContent = arrows.down;
+        p.up.setAttribute('aria-label', `Move ${p.title} ${arrows.upWord}`);
+        p.down.setAttribute('aria-label', `Move ${p.title} ${arrows.downWord}`);
+        const target = zone === 'right' ? 'bottom' : 'right';
+        p.dock.textContent = zone === 'right' ? '⤵' : '⤴';
+        p.dock.setAttribute('aria-label', `Move ${p.title} to the ${target} dock`);
+        p.dock.title = `Move to the ${target} dock`;
+
+        // Every one of these would break the "exactly one main panel" invariant,
+        // so on the main panel they are all off. CSS hides them as well; this is
+        // the half that also stops a keyboard user reaching them.
+        p.up.disabled = isMain || i === 0;
+        p.down.disabled = isMain || i === last;
+        p.makeMain.disabled = isMain;
+        p.dock.disabled = isMain;
+      });
+    }
   }
 
-  /** Reconcile the parent's children to `panel [splitter panel]*`, with a splitter
-   *  only between two adjacent *expanded* panels. Nodes already in the right place
-   *  are left alone, so nothing is needlessly detached. */
-  private syncDom(): void {
+  private applyFractions(): void {
+    this.el.root.style.setProperty('--right-frac', String(this.layout.zones.right));
+    this.el.root.style.setProperty('--bottom-frac', String(this.layout.zones.bottom));
+  }
+
+  /** Reconcile a zone's children to `panel [splitter panel]*`, with a splitter
+   *  only between two adjacent *expanded* panels. Nodes already in the right
+   *  place are left alone, so nothing is needlessly detached. */
+  private syncZone(zone: ZoneId): void {
+    const list = panelsIn(this.layout.panels, zone);
+    const sectionOf = (s: PanelState): HTMLElement => this.panels.get(s.id)!.section;
+
+    if (zone === 'main') {
+      // One panel, no splitters — the invariant means there is nothing to decide.
+      reconcile(this.el.main, list.map(sectionOf));
+      return;
+    }
+
     const desired: HTMLElement[] = [];
-    let prev: Panel | null = null;
-    for (const p of this.panels) {
-      if (prev && !prev.collapsed && !p.collapsed) desired.push(this.splitterFor(prev, p));
-      desired.push(p.section);
-      prev = p;
+    let prev: PanelState | null = null;
+    for (const s of list) {
+      if (prev && !prev.collapsed && !s.collapsed) desired.push(this.splitterFor(zone, prev, s));
+      desired.push(sectionOf(s));
+      prev = s;
     }
+    reconcile(this.el[zone], desired);
 
-    let cursor: ChildNode | null = this.parent.firstChild;
-    for (const node of desired) {
-      if (cursor === node) {
-        cursor = cursor.nextSibling;
-        continue;
-      }
-      this.parent.insertBefore(node, cursor);
-    }
-    while (cursor) {
-      const next: ChildNode | null = cursor.nextSibling;
-      cursor.remove();
-      cursor = next;
-    }
+    // An empty dock collapses away entirely, taking its zone splitter with it.
+    const empty = list.length === 0;
+    this.el[zone].classList.toggle('is-empty', empty);
+    this.zoneSplitters.get(zone)?.classList.toggle('is-empty', empty);
   }
 
-  private splitterFor(above: Panel, below: Panel): HTMLElement {
+  private splitterFor(zone: DockId, above: PanelState, below: PanelState): HTMLElement {
     let s = this.splitters.get(below.id);
     if (!s) {
       s = document.createElement('div');
-      s.className = 'panel-splitter';
+      s.dataset.kind = 'panel';
+      s.tabIndex = 0;
       s.setAttribute('role', 'separator');
-      s.setAttribute('aria-orientation', 'horizontal');
       s.setAttribute('aria-valuemin', '0');
       s.setAttribute('aria-valuemax', '100');
-      s.tabIndex = 0;
       const el = s;
-      el.addEventListener('pointerdown', (ev) => this.beginResize(el, ev));
-      el.addEventListener('keydown', (ev) => this.onSplitterKey(el, ev));
+      el.addEventListener('pointerdown', (ev) => this.beginPanelResize(el, ev));
+      el.addEventListener('keydown', (ev) => this.onPanelSplitterKey(el, ev));
       el.addEventListener('dblclick', () => this.equalize(el));
       this.splitters.set(below.id, el);
     }
+    // Re-set on every call, not just on creation: a panel that changed dock
+    // brings its cached splitter along, and the axis flips with the dock.
+    const axis = STACK_AXIS[zone];
+    s.className = `panel-splitter${axis.seamVertical ? ' is-vertical' : ''}`;
+    s.setAttribute('aria-orientation', axis.seamVertical ? 'vertical' : 'horizontal');
+    s.dataset.zone = zone;
     s.dataset.below = below.id;
-    s.setAttribute('aria-label', `Resize ${above.title} and ${below.title}`);
+    s.setAttribute('aria-label', `Resize ${titleOf(this.panels, above)} and ${titleOf(this.panels, below)}`);
     const total = above.weight + below.weight;
     s.setAttribute('aria-valuenow', String(Math.round((above.weight / total) * 100)));
     return s;
   }
 
-  // ---- resizing ----
+  // ---- panel resizing ----
 
   /** The expanded pair a splitter sits between, straight from the model. */
-  private pairFor(splitter: HTMLElement): [Panel, Panel] | null {
-    const j = this.panels.findIndex((p) => p.id === splitter.dataset.below);
-    const b = this.panels[j];
-    const a = this.panels[j - 1];
-    return a && b && !a.collapsed && !b.collapsed ? [a, b] : null;
+  private pairFor(splitter: HTMLElement): { a: PanelState; b: PanelState; axis: Axis } | null {
+    const zone = splitter.dataset.zone as DockId | undefined;
+    if (!zone) return null;
+    const list = panelsIn(this.layout.panels, zone);
+    const j = list.findIndex((p) => p.id === splitter.dataset.below);
+    const b = list[j];
+    const a = list[j - 1];
+    return a && b && !a.collapsed && !b.collapsed ? { a, b, axis: STACK_AXIS[zone] } : null;
   }
 
-  private beginResize(splitter: HTMLElement, ev: PointerEvent): void {
+  private beginPanelResize(splitter: HTMLElement, ev: PointerEvent): void {
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
     const pair = this.pairFor(splitter);
     if (!pair) return;
-    const [a, b] = pair;
+    const { a, b, axis } = pair;
 
-    // box-sizing is border-box globally, so the rect height is the resolved size.
-    const aPx0 = a.section.getBoundingClientRect().height;
-    const bPx0 = b.section.getBoundingClientRect().height;
+    const aPx0 = this.sizeOf(a, axis);
+    const bPx0 = this.sizeOf(b, axis);
     const totalPx = aPx0 + bPx0;
     const totalW = a.weight + b.weight;
     if (totalPx < MIN_PANEL_PX * 2 || totalW <= 0) return;
 
-    const y0 = ev.clientY;
-    ev.preventDefault(); // suppress text selection and the native drag
-    splitter.focus(); // preventDefault suppresses the implicit focus in some engines
-    splitter.setPointerCapture(ev.pointerId);
-    splitter.classList.add('is-active');
-    document.body.classList.add('is-resizing');
-
-    const onMove = (e: PointerEvent): void => {
-      const d = clamp(e.clientY - y0, MIN_PANEL_PX - aPx0, bPx0 - MIN_PANEL_PX);
-      this.applyPair(splitter, a, b, (aPx0 + d) / totalPx, totalW);
-    };
-    const end = (): void => {
-      splitter.removeEventListener('pointermove', onMove);
-      splitter.removeEventListener('pointerup', end);
-      splitter.removeEventListener('pointercancel', end);
-      splitter.classList.remove('is-active');
-      document.body.classList.remove('is-resizing');
-      this.commit();
-    };
-    splitter.addEventListener('pointermove', onMove);
-    splitter.addEventListener('pointerup', end);
-    splitter.addEventListener('pointercancel', end);
+    const start = ev[axis.pos];
+    this.gesture(splitter, ev, axis, {
+      move: (e) => {
+        const d = clamp(e[axis.pos] - start, MIN_PANEL_PX - aPx0, bPx0 - MIN_PANEL_PX);
+        this.applyPair(splitter, a, b, (aPx0 + d) / totalPx, totalW);
+      },
+      end: () => this.commit(),
+    });
   }
 
   /** Split `totalW` across the pair at `ratio`. Their sum is invariant, so no
    *  other panel's share shifts and the conversion stays exact. */
   private applyPair(
     splitter: HTMLElement,
-    a: Panel,
-    b: Panel,
+    a: PanelState,
+    b: PanelState,
     ratio: number,
     totalW: number,
   ): void {
     a.weight = clampWeight(totalW * ratio);
     b.weight = clampWeight(totalW - a.weight);
-    a.section.style.flexGrow = String(a.weight);
-    b.section.style.flexGrow = String(b.weight);
+    this.panels.get(a.id)!.section.style.flexGrow = String(a.weight);
+    this.panels.get(b.id)!.section.style.flexGrow = String(b.weight);
     splitter.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
   }
 
-  private onSplitterKey(splitter: HTMLElement, ev: KeyboardEvent): void {
-    const step = ev.key === 'ArrowUp' ? -KEY_RESIZE_PX : ev.key === 'ArrowDown' ? KEY_RESIZE_PX : 0;
-    if (step === 0) return;
+  private onPanelSplitterKey(splitter: HTMLElement, ev: KeyboardEvent): void {
     const pair = this.pairFor(splitter);
     if (!pair) return;
-    const [a, b] = pair;
-    const aPx0 = a.section.getBoundingClientRect().height;
-    const bPx0 = b.section.getBoundingClientRect().height;
-    const d = clamp(step, MIN_PANEL_PX - aPx0, bPx0 - MIN_PANEL_PX);
+    const { a, b, axis } = pair;
+    const dir = keyStep(ev, axis);
+    if (dir === 0) return;
+    const aPx0 = this.sizeOf(a, axis);
+    const bPx0 = this.sizeOf(b, axis);
+    const d = clamp(dir * KEY_RESIZE_PX, MIN_PANEL_PX - aPx0, bPx0 - MIN_PANEL_PX);
     ev.preventDefault();
     this.applyPair(splitter, a, b, (aPx0 + d) / (aPx0 + bPx0), a.weight + b.weight);
     this.commit();
@@ -306,65 +402,258 @@ export class PanelSidebar {
   private equalize(splitter: HTMLElement): void {
     const pair = this.pairFor(splitter);
     if (!pair) return;
-    const [a, b] = pair;
-    this.applyPair(splitter, a, b, 0.5, a.weight + b.weight);
+    this.applyPair(splitter, pair.a, pair.b, 0.5, pair.a.weight + pair.b.weight);
     this.commit();
   }
 
-  // ---- reordering by drag ----
+  private sizeOf(s: PanelState, axis: Axis): number {
+    // box-sizing is border-box globally, so the rect is the resolved size.
+    return this.panels.get(s.id)!.section.getBoundingClientRect()[axis.size];
+  }
 
-  /** Drag the grip: when the pointer crosses a neighbour's midpoint, hand off to
-   *  move() so this and the ▲/▼ buttons can't drift apart.
+  // ---- dock resizing ----
+
+  /** Drag the seam between the main panel and a dock. The fraction is measured
+   *  against the splitter's own parent, which is exactly the box `calc(var(...)
+   *  * 100%)` resolves against in the stylesheet. */
+  private beginZoneResize(splitter: HTMLElement, zone: DockId, ev: PointerEvent): void {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    const container = splitter.parentElement;
+    if (!container) return;
+    const axis = ZONE_AXIS[zone];
+    const box = container.getBoundingClientRect();
+    const total = box[axis.size];
+    if (total <= 0) return;
+
+    // The dock hugs the far edge, so its size is (far edge − pointer); the
+    // offset pins the seam to where it was actually grabbed.
+    const far = axis.size === 'width' ? box.right : box.bottom;
+    const offset = this.el[zone].getBoundingClientRect()[axis.size] - (far - ev[axis.pos]);
+
+    this.gesture(splitter, ev, axis, {
+      move: (e) => this.setFraction(zone, (far - e[axis.pos] + offset) / total),
+      end: () => this.commit(),
+    });
+  }
+
+  private onZoneSplitterKey(splitter: HTMLElement, zone: DockId, ev: KeyboardEvent): void {
+    const axis = ZONE_AXIS[zone];
+    const dir = keyStep(ev, axis);
+    if (dir === 0) return;
+    const total = splitter.parentElement?.getBoundingClientRect()[axis.size] ?? 0;
+    if (total <= 0) return;
+    ev.preventDefault();
+    // Dragging the seam *towards* the dock shrinks it, hence the minus.
+    this.setFraction(zone, this.layout.zones[zone] - (dir * KEY_RESIZE_PX) / total);
+    this.commit();
+  }
+
+  private setFraction(zone: DockId, frac: number): void {
+    this.layout.zones[zone] = clampFraction(frac);
+    this.applyFractions();
+    const splitter = this.zoneSplitters.get(zone);
+    splitter?.setAttribute('aria-valuenow', String(Math.round(this.layout.zones[zone] * 100)));
+  }
+
+  // ---- gestures ----
+
+  /** The shared pointer-capture dance for both kinds of splitter: capture, mark
+   *  the body so the resize cursor beats CodeMirror's `cursor: text`, and unbind
+   *  on up *or* cancel. */
+  private gesture(
+    captor: HTMLElement,
+    ev: PointerEvent,
+    axis: Axis,
+    on: { move: (e: PointerEvent) => void; end: () => void },
+  ): void {
+    ev.preventDefault(); // suppress text selection and the native drag
+    captor.focus(); // preventDefault suppresses the implicit focus in some engines
+    captor.setPointerCapture(ev.pointerId);
+    captor.classList.add('is-active');
+    document.body.classList.add('is-resizing', axis.seamVertical ? 'is-resizing-col' : 'is-resizing-row');
+
+    const end = (): void => {
+      captor.removeEventListener('pointermove', on.move);
+      captor.removeEventListener('pointerup', end);
+      captor.removeEventListener('pointercancel', end);
+      captor.classList.remove('is-active');
+      document.body.classList.remove('is-resizing', 'is-resizing-col', 'is-resizing-row');
+      on.end();
+    };
+    captor.addEventListener('pointermove', on.move);
+    captor.addEventListener('pointerup', end);
+    captor.addEventListener('pointercancel', end);
+  }
+
+  /** Drag the grip: hit-test the zone under the pointer, then hand off to the
+   *  same model functions the header buttons use, so the two can't drift apart.
    *
-   *  The pointer is captured on the *container*, not on the grip: a reorder
-   *  re-inserts the dragged panel, and re-inserting the capturing element's
-   *  ancestor releases the capture, which would strand the drag after the first
-   *  swap. The container never moves. */
+   *  The pointer is captured on the workbench *root*, not on the grip or the
+   *  dock: a move re-inserts the dragged panel, possibly into another zone, and
+   *  re-inserting the capturing element's ancestor releases the capture — which
+   *  would strand the drag after the first hop. The root never moves. */
   private beginDrag(panel: Panel, ev: PointerEvent): void {
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    if (this.stateOf(panel.id)?.zone === 'main') return; // dragging main out would empty it
     ev.preventDefault();
-    const captor = this.parent;
+
+    const captor = this.el.root;
     captor.setPointerCapture(ev.pointerId);
     panel.section.classList.add('is-dragging');
+    // Reveals an empty dock as a drop strip: display:none leaves no rect to
+    // aim at, and an emptied dock is exactly the one you want to drop back into.
+    document.body.classList.add('is-dragging-panel');
+    let over: ZoneId | null = null;
 
     const onMove = (e: PointerEvent): void => {
-      const i = this.panels.indexOf(panel);
-      const rect = panel.section.getBoundingClientRect();
-      if (e.clientY < rect.top) {
-        const above = this.panels[i - 1];
-        // Only swap once the pointer is past the neighbour's midpoint, so a
-        // panel doesn't oscillate while the cursor hovers a boundary.
-        if (above && e.clientY < midpoint(above)) this.move(panel.id, -1);
-      } else if (e.clientY > rect.bottom) {
-        const below = this.panels[i + 1];
-        if (below && e.clientY > midpoint(below)) this.move(panel.id, 1);
-      }
+      over = this.zoneAt(e.clientX, e.clientY);
+      this.el.main.classList.toggle('is-drop-target', over === 'main');
+      // Docking follows the pointer live, but promotion waits for the release:
+      // the main zone lies between the two docks, so every right→bottom drag
+      // crosses it, and promoting on the way through would make the docks
+      // unreachable from each other.
+      if (over === null || over === 'main') return;
+      this.transact(
+        moveTo(this.layout.panels, panel.id, over, this.dropIndex(over, panel.id, e)),
+        panel.id,
+      );
     };
     const end = (): void => {
       captor.removeEventListener('pointermove', onMove);
       captor.removeEventListener('pointerup', end);
       captor.removeEventListener('pointercancel', end);
       panel.section.classList.remove('is-dragging');
+      document.body.classList.remove('is-dragging-panel');
+      this.el.main.classList.remove('is-drop-target');
+      if (over === 'main') this.promote(panel.id);
     };
     captor.addEventListener('pointermove', onMove);
     captor.addEventListener('pointerup', end);
     captor.addEventListener('pointercancel', end);
   }
 
+  /** Which zone a point is over, or null between/outside them (the toolbar, a
+   *  zone splitter) — where a drag should simply hold its position. */
+  private zoneAt(x: number, y: number): ZoneId | null {
+    for (const zone of ZONE_IDS) {
+      const r = this.el[zone].getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        return zone;
+      }
+    }
+    return null;
+  }
+
+  /** Where the dragged panel would land in `zone`: the first sibling whose
+   *  midpoint the pointer has passed. Measured against the *other* panels only,
+   *  which is what makes it stable — inserting the dragged panel pushes those
+   *  midpoints further away, so a settled drop never oscillates. */
+  private dropIndex(zone: DockId, id: string, e: PointerEvent): number {
+    const axis = STACK_AXIS[zone];
+    const others = panelsIn(this.layout.panels, zone).filter((p) => p.id !== id);
+    const pos = e[axis.pos];
+    for (let i = 0; i < others.length; i++) {
+      const r = this.panels.get(others[i]!.id)!.section.getBoundingClientRect();
+      const mid = axis.size === 'width' ? r.left + r.width / 2 : r.top + r.height / 2;
+      if (pos < mid) return i;
+    }
+    return others.length;
+  }
+
+  // ---- wiring ----
+
+  private discover(): DiscoveredPanel[] {
+    const discovered: DiscoveredPanel[] = [];
+    for (const zone of ZONE_IDS) {
+      // Direct children only: a panel's *content* may well contain markup that
+      // would otherwise be mistaken for a nested panel.
+      for (const section of this.el[zone].querySelectorAll<HTMLElement>(':scope > [data-panel]')) {
+        const id = section.dataset.panel!;
+        const q = <T extends HTMLElement>(sel: string): T | null => section.querySelector<T>(sel);
+        const toggle = q<HTMLButtonElement>('.panel-toggle');
+        const makeMain = q<HTMLButtonElement>('.panel-main');
+        const dock = q<HTMLButtonElement>('.panel-dock');
+        const up = q<HTMLButtonElement>('.panel-move[data-move="up"]');
+        const down = q<HTMLButtonElement>('.panel-move[data-move="down"]');
+        const body = q<HTMLElement>('.panel-body');
+        if (!toggle || !makeMain || !dock || !up || !down || !body) {
+          throw new Error(
+            `Panel "${id}" is missing a .panel-toggle, .panel-main, .panel-dock, .panel-move or .panel-body`,
+          );
+        }
+        const weight = Number(section.dataset.defaultWeight ?? '1');
+        this.panels.set(id, {
+          id,
+          title: toggle.textContent?.trim() || id,
+          section,
+          toggle,
+          makeMain,
+          dock,
+          up,
+          down,
+          body,
+          grip: q<HTMLElement>('.panel-grip'),
+        });
+        discovered.push({
+          id,
+          zone,
+          defaultWeight: Number.isFinite(weight) && weight > 0 ? weight : 1,
+        });
+      }
+    }
+    // Docks may be empty, but the main zone may not — the layout has nowhere to
+    // put a panel it can promote from.
+    if (discovered.filter((d) => d.zone === 'main').length !== 1) {
+      throw new Error('PanelDock: the main zone must contain exactly one [data-panel] section');
+    }
+    return discovered;
+  }
+
+  private bindPanels(): void {
+    for (const p of this.panels.values()) {
+      p.toggle.addEventListener('click', () => {
+        this.setCollapsed(p.id, !this.stateOf(p.id)?.collapsed);
+      });
+      p.makeMain.addEventListener('click', () => this.promote(p.id));
+      p.dock.addEventListener('click', () => this.toOtherDock(p.id, p.dock));
+      p.up.addEventListener('click', () => this.move(p.id, -1, p.up));
+      p.down.addEventListener('click', () => this.move(p.id, 1, p.down));
+      p.grip?.addEventListener('pointerdown', (ev) => this.beginDrag(p, ev));
+    }
+  }
+
+  private bindZoneSplitters(): void {
+    for (const zone of ['right', 'bottom'] as const) {
+      const el = this.el.root.querySelector<HTMLElement>(
+        `.panel-splitter[data-kind="zone"][data-zone="${zone}"]`,
+      );
+      if (!el) throw new Error(`PanelDock: no zone splitter for the ${zone} dock`);
+      this.zoneSplitters.set(zone, el);
+      el.addEventListener('pointerdown', (ev) => this.beginZoneResize(el, zone, ev));
+      el.addEventListener('keydown', (ev) => this.onZoneSplitterKey(el, zone, ev));
+      el.addEventListener('dblclick', () => {
+        this.setFraction(zone, this.defaults.zones[zone]);
+        this.commit();
+      });
+      el.setAttribute('aria-label', `Resize the ${zone} dock`);
+      el.setAttribute('aria-valuenow', String(Math.round(this.layout.zones[zone] * 100)));
+    }
+  }
+
   // ---- persistence ----
+
+  private read(): string | null {
+    try {
+      return this.storage?.getItem(STORAGE_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   private commit(): void {
     try {
-      this.storage?.setItem(
-        STORAGE_KEY,
-        JSON.stringify(
-          this.panels.map((p) => ({
-            id: p.id,
-            collapsed: p.collapsed,
-            weight: Math.round(p.weight * 1000) / 1000,
-          })),
-        ),
-      );
+      this.storage?.setItem(STORAGE_KEY, serialize(this.getLayout()));
+      this.storage?.removeItem(LEGACY_KEY);
     } catch {
       /* private mode or quota: the layout is a nicety, never fail the app for it */
     }
@@ -372,95 +661,55 @@ export class PanelSidebar {
   }
 }
 
-function midpoint(p: Panel): number {
-  const r = p.section.getBoundingClientRect();
-  return r.top + r.height / 2;
+/** Make `container`'s children exactly `desired`, in order, moving as few nodes
+ *  as possible — anything already in place keeps its scroll and its focus. */
+function reconcile(container: HTMLElement, desired: readonly HTMLElement[]): void {
+  let cursor: ChildNode | null = container.firstChild;
+  for (const node of desired) {
+    if (cursor === node) {
+      cursor = cursor.nextSibling;
+      continue;
+    }
+    container.insertBefore(node, cursor);
+  }
+  // Whatever is left is a splitter or a panel that moved elsewhere.
+  while (cursor) {
+    const next: ChildNode | null = cursor.nextSibling;
+    cursor.remove();
+    cursor = next;
+  }
 }
 
-/** Read the panels out of the markup, in document order. */
-function discover(parent: HTMLElement): Panel[] {
-  const sections = parent.querySelectorAll<HTMLElement>('[data-panel]');
-  const panels: Panel[] = [];
-  for (const section of sections) {
-    const id = section.dataset.panel!;
-    const toggle = section.querySelector<HTMLButtonElement>('.panel-toggle');
-    const up = section.querySelector<HTMLButtonElement>('.panel-move[data-move="up"]');
-    const down = section.querySelector<HTMLButtonElement>('.panel-move[data-move="down"]');
-    const body = section.querySelector<HTMLElement>('.panel-body');
-    if (!toggle || !up || !down || !body) {
-      throw new Error(`Panel "${id}" is missing a .panel-toggle, .panel-move or .panel-body`);
-    }
-    const weight = Number(section.dataset.defaultWeight ?? '1');
-    panels.push({
-      id,
-      title: toggle.textContent?.trim() || id,
-      defaultWeight: Number.isFinite(weight) && weight > 0 ? weight : 1,
-      section,
-      toggle,
-      up,
-      down,
-      body,
-      collapsed: false,
-      weight: Number.isFinite(weight) && weight > 0 ? weight : 1,
-    });
-  }
-  if (panels.length === 0) throw new Error('PanelSidebar: no [data-panel] sections found');
-  return panels;
+/** ArrowUp/Left → -1, ArrowDown/Right → +1, along the splitter's own axis. */
+function keyStep(ev: KeyboardEvent, axis: Axis): -1 | 0 | 1 {
+  const [less, more] = axis.seamVertical
+    ? ['ArrowLeft', 'ArrowRight']
+    : ['ArrowUp', 'ArrowDown'];
+  return ev.key === less ? -1 : ev.key === more ? 1 : 0;
+}
+
+function titleOf(panels: Map<string, Panel>, s: PanelState): string {
+  return panels.get(s.id)?.title ?? s.id;
+}
+
+function mutable(layout: DockLayout): { panels: PanelState[]; zones: ZoneFractions } {
+  return { panels: layout.panels.map((p) => ({ ...p })), zones: { ...layout.zones } };
+}
+
+function readDefaultFractions(el: PanelDockElements): ZoneFractions {
+  const read = (zone: 'right' | 'bottom', fallback: number): number => {
+    const v = Number(el[zone].dataset.defaultFrac ?? '');
+    return Number.isFinite(v) && v > 0 ? clampFraction(v) : fallback;
+  };
+  return { right: read('right', 0.25), bottom: read('bottom', 0.3) };
 }
 
 /** localStorage, or null where merely *touching* it throws (Safari private mode,
  *  blocked cookies). */
-function safeLocalStorage(): PanelSidebarOptions['storage'] {
+function safeLocalStorage(): PanelDockOptions['storage'] {
   try {
     return window.localStorage;
   } catch {
     return null;
   }
-}
-
-/** Merge a persisted layout onto the panels found in the DOM: unknown ids are
- *  dropped, ids added since the save are appended in document order, weights are
- *  clamped, and anything malformed falls back to the markup defaults. Never throws. */
-function loadLayout(
-  storage: PanelSidebarOptions['storage'],
-  defaults: readonly PanelState[],
-): PanelState[] {
-  const fallback = (): PanelState[] => defaults.map((d) => ({ ...d }));
-
-  let raw: string | null = null;
-  try {
-    raw = storage?.getItem(STORAGE_KEY) ?? null;
-  } catch {
-    return fallback();
-  }
-  if (!raw) return fallback();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fallback();
-  }
-  if (!Array.isArray(parsed)) return fallback();
-
-  const byId = new Map(defaults.map((d) => [d.id, d]));
-  const seen = new Set<string>();
-  const out: PanelState[] = [];
-
-  for (const entry of parsed) {
-    if (typeof entry !== 'object' || entry === null) continue;
-    const { id, collapsed, weight } = entry as Record<string, unknown>;
-    if (typeof id !== 'string' || !byId.has(id) || seen.has(id)) continue;
-    seen.add(id);
-    out.push({
-      id,
-      collapsed: collapsed === true,
-      weight:
-        typeof weight === 'number' && Number.isFinite(weight)
-          ? clampWeight(weight)
-          : byId.get(id)!.weight,
-    });
-  }
-  for (const d of defaults) if (!seen.has(d.id)) out.push({ ...d });
-  return out;
 }

@@ -25,83 +25,122 @@
       <button id="btn-step" type="button">Step</button>
       <button id="btn-reset" type="button">Reset</button>
       <span id="status" class="status">Loading…</span>
+      <button
+        id="btn-reset-layout"
+        class="icon-button"
+        type="button"
+        title="Reset panel layout"
+        aria-label="Reset panel layout"
+      >
+        ↺
+      </button>
     </div>
 
-    <main>
-      <section class="left">
-        <div id="asm-error" hidden></div>
-        <div id="editor"></div>
-      </section>
-
-      <!-- The panels are collapsible / reorderable / resizable; src/ui/panels.ts
-           discovers them from [data-panel] and reads their defaults off
-           data-default-weight, so adding a panel here needs no code change. -->
-      <aside class="right">
-        <div class="sidebar-bar">
-          <span>Panels</span>
-          <button id="btn-reset-layout" type="button" title="Reset panel layout" aria-label="Reset panel layout">↺</button>
-        </div>
-
-        <div id="sidebar" class="panel-stack">
-          <section class="panel" data-panel="registers" data-default-weight="3">
+    <!-- Three zones: main (exactly one panel, always), plus a right and a bottom
+         dock that may each hold 0..n panels. src/ui/panels.ts discovers panels
+         from [data-panel] and takes their defaults from data-default-weight and
+         from the zone they are authored in, so adding a panel here needs no code
+         change. Panels move between the docks, and any of them can be promoted
+         to main — whereupon the outgoing main panel takes its vacated slot. -->
+    <main id="workbench">
+      <div class="col-main">
+        <div id="zone-main" class="zone zone-main">
+          <section class="panel" data-panel="editor" data-default-weight="3">
             <h2 class="panel-header">
               <span class="panel-grip" aria-hidden="true">⠿</span>
               <button
                 type="button"
                 class="panel-toggle"
-                id="toggle-registers"
+                id="toggle-editor"
                 aria-expanded="true"
-                aria-controls="body-registers"
+                aria-controls="editor"
               >
-                Registers
+                Source
               </button>
-              <button type="button" class="panel-move" data-move="up" aria-label="Move Registers up">▲</button>
-              <button type="button" class="panel-move" data-move="down" aria-label="Move Registers down">▼</button>
+              <button type="button" class="panel-main" title="Make this the main panel" aria-label="Make Source the main panel">◱</button>
+              <button type="button" class="panel-dock">⤵</button>
+              <button type="button" class="panel-move" data-move="up">▲</button>
+              <button type="button" class="panel-move" data-move="down">▼</button>
             </h2>
-            <div class="panel-body" id="body-registers" role="region" aria-labelledby="toggle-registers">
-              <div id="registers"></div>
-            </div>
-            <!-- Pinned below the scrolling grid: it summarises current state, so it
-                 must not scroll away. Styled by .panel-footer, never by #flags. -->
-            <div class="panel-footer" id="flags"></div>
-          </section>
-
-          <section class="panel" data-panel="console" data-default-weight="3">
-            <h2 class="panel-header">
-              <span class="panel-grip" aria-hidden="true">⠿</span>
-              <button
-                type="button"
-                class="panel-toggle"
-                id="toggle-console"
-                aria-expanded="true"
-                aria-controls="console"
-              >
-                Console
-              </button>
-              <button type="button" class="panel-move" data-move="up" aria-label="Move Console up">▲</button>
-              <button type="button" class="panel-move" data-move="down" aria-label="Move Console down">▼</button>
-            </h2>
-            <pre class="panel-body" id="console" role="region" aria-labelledby="toggle-console"></pre>
-          </section>
-
-          <section class="panel" data-panel="diagnostics" data-default-weight="1">
-            <h2 class="panel-header">
-              <span class="panel-grip" aria-hidden="true">⠿</span>
-              <button
-                type="button"
-                class="panel-toggle"
-                id="toggle-diagnostics"
-                aria-expanded="true"
-                aria-controls="diagnostics"
-              >
-                Diagnostics
-              </button>
-              <button type="button" class="panel-move" data-move="up" aria-label="Move Diagnostics up">▲</button>
-              <button type="button" class="panel-move" data-move="down" aria-label="Move Diagnostics down">▼</button>
-            </h2>
-            <div class="panel-body" id="diagnostics" role="region" aria-labelledby="toggle-diagnostics"></div>
+            <!-- Inside the panel, so the banner follows the editor wherever it is
+                 docked instead of being stranded in the main zone. -->
+            <div id="asm-error" class="panel-notice" hidden></div>
+            <div class="panel-body" id="editor" role="region" aria-labelledby="toggle-editor"></div>
           </section>
         </div>
+
+        <div class="panel-splitter" data-kind="zone" data-zone="bottom" tabindex="0" role="separator" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100"></div>
+
+        <div id="zone-bottom" class="zone panel-stack-h" data-default-frac="0.3"></div>
+      </div>
+
+      <div class="panel-splitter is-vertical" data-kind="zone" data-zone="right" tabindex="0" role="separator" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100"></div>
+
+      <aside id="zone-right" class="zone panel-stack-v" data-default-frac="0.25">
+        <section class="panel" data-panel="registers" data-default-weight="3">
+          <h2 class="panel-header">
+            <span class="panel-grip" aria-hidden="true">⠿</span>
+            <button
+              type="button"
+              class="panel-toggle"
+              id="toggle-registers"
+              aria-expanded="true"
+              aria-controls="body-registers"
+            >
+              Registers
+            </button>
+            <button type="button" class="panel-main" title="Make this the main panel" aria-label="Make Registers the main panel">◱</button>
+            <button type="button" class="panel-dock">⤵</button>
+            <button type="button" class="panel-move" data-move="up">▲</button>
+            <button type="button" class="panel-move" data-move="down">▼</button>
+          </h2>
+          <div class="panel-body" id="body-registers" role="region" aria-labelledby="toggle-registers">
+            <div id="registers"></div>
+          </div>
+          <!-- Pinned below the scrolling grid: it summarises current state, so it
+               must not scroll away. Styled by .panel-footer, never by #flags. -->
+          <div class="panel-footer" id="flags"></div>
+        </section>
+
+        <section class="panel" data-panel="console" data-default-weight="3">
+          <h2 class="panel-header">
+            <span class="panel-grip" aria-hidden="true">⠿</span>
+            <button
+              type="button"
+              class="panel-toggle"
+              id="toggle-console"
+              aria-expanded="true"
+              aria-controls="console"
+            >
+              Console
+            </button>
+            <button type="button" class="panel-main" title="Make this the main panel" aria-label="Make Console the main panel">◱</button>
+            <button type="button" class="panel-dock">⤵</button>
+            <button type="button" class="panel-move" data-move="up">▲</button>
+            <button type="button" class="panel-move" data-move="down">▼</button>
+          </h2>
+          <pre class="panel-body" id="console" role="region" aria-labelledby="toggle-console"></pre>
+        </section>
+
+        <section class="panel" data-panel="diagnostics" data-default-weight="1">
+          <h2 class="panel-header">
+            <span class="panel-grip" aria-hidden="true">⠿</span>
+            <button
+              type="button"
+              class="panel-toggle"
+              id="toggle-diagnostics"
+              aria-expanded="true"
+              aria-controls="diagnostics"
+            >
+              Diagnostics
+            </button>
+            <button type="button" class="panel-main" title="Make this the main panel" aria-label="Make Diagnostics the main panel">◱</button>
+            <button type="button" class="panel-dock">⤵</button>
+            <button type="button" class="panel-move" data-move="up">▲</button>
+            <button type="button" class="panel-move" data-move="down">▼</button>
+          </h2>
+          <div class="panel-body" id="diagnostics" role="region" aria-labelledby="toggle-diagnostics"></div>
+        </section>
       </aside>
     </main>
 

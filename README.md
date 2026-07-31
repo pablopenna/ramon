@@ -165,6 +165,7 @@ npm install
 npm run dev      # Vite dev server (the app)
 npm run build    # tsc typecheck + Vite production build
 npm run proof    # headless Node proof: drives the REAL harness, no browser
+npm run proof:layout  # headless Node proof of the panel layout model
 ```
 
 `npm run proof` assembles a write+exit program, runs it (expects console `Hi\n`,
@@ -177,12 +178,43 @@ diagnostics panels, with the current source line highlighted as you step. The
 editor seeds with the `Hi\n` write+exit program, so Run prints output and Step
 demonstrates the highlight immediately.
 
-The sidebar panels are collapsible (click a header), reorderable (drag the ⠿
-grip, or use ▲/▼) and resizable (drag a splitter; arrow keys resize a focused
-splitter, double-click evens the pair). `↺` restores the defaults. The layout is
-remembered in `localStorage` under `ramon.layout.v1` — a corrupt or missing
-value simply falls back to the defaults, and blocked storage (Safari private
-mode) degrades to a working, non-persistent sidebar.
+### The panel workbench
+
+Everything, including the editor, is a panel. There are three zones:
+
+```
+┌──────────────────┬──────────┐   main:   exactly one panel, always
+│      MAIN        │  RIGHT   │   right:  0..n panels, stacked vertically
+│                  │  dock    │   bottom: 0..n panels, side by side
+├──────────────────┤          │
+│   BOTTOM dock    │          │   Either dock may be empty, and then collapses
+└──────────────────┴──────────┘   away so the others take the whole window.
+```
+
+- **Promote to main** — `◱` in a panel's header, or drag its ⠿ grip onto the main
+  area and release. Promotion *swaps*: the outgoing main panel drops into the exact
+  slot the promoted one vacated, which is what keeps "there is always exactly one
+  main panel" true without any special cases. The main panel therefore has no
+  collapse, reorder, dock or drag controls — you change it by promoting another.
+- **Move between docks** — `⤵` / `⤴` in the header, or drag the grip into the other
+  dock. An empty dock appears as a dashed drop strip while you drag.
+- **Reorder** — drag the grip, or use ▲/▼ (◀/▶ in the bottom dock).
+- **Collapse** — click a header. In the bottom dock a collapsed panel becomes a
+  narrow vertical title strip.
+- **Resize** — drag any splitter, between two panels or between a dock and the main
+  zone. Arrow keys resize a focused splitter; double-click evens a panel pair, or
+  restores a dock to its default size.
+- **Reset** — `↺` in the toolbar.
+
+Panel sizes are stored as *weights* within their dock, and dock sizes as a
+*fraction* of the window — never pixels — so a layout saved on a large monitor
+restores sensibly on a small one. The whole thing persists in `localStorage` under
+`ramon.layout.v2`; a corrupt, stale or hand-edited value is repaired rather than
+discarded (see `mergeSaved` in `src/ui/layout/model.ts`), and blocked storage
+(Safari private mode) degrades to a working, non-persistent layout.
+
+`npm run proof:layout` exercises that model headlessly — the single-main invariant
+across every move, draining either dock, and the merge against malformed input.
 
 ---
 
