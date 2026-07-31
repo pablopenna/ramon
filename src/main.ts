@@ -10,6 +10,7 @@ import './style.css';
 // classic worker whose bare ESM imports can't execute.
 import EmulatorWorker from './worker/emulator.worker.ts?worker';
 import { SourceEditor } from './ui/editor.ts';
+import { PanelSidebar } from './ui/panels.ts';
 import type { Snapshot, WorkerRequest, WorkerResponse } from './emulator/protocol.ts';
 import { ARCHES, DEFAULT_ARCH_ID, getArch } from './arch/registry.ts';
 
@@ -29,7 +30,9 @@ const el = {
   diagnostics: document.getElementById('diagnostics')!,
   status: document.getElementById('status')!,
   asmError: document.getElementById('asm-error')!,
+  sidebar: document.getElementById('sidebar')!,
   arch: document.getElementById('arch') as HTMLSelectElement,
+  btnResetLayout: document.getElementById('btn-reset-layout') as HTMLButtonElement,
   btnAssemble: document.getElementById('btn-assemble') as HTMLButtonElement,
   btnRun: document.getElementById('btn-run') as HTMLButtonElement,
   btnStep: document.getElementById('btn-step') as HTMLButtonElement,
@@ -44,6 +47,17 @@ const editor = new SourceEditor(el.editor, getArch(currentArchId).defaultProgram
     if (state.loaded) markStale();
   },
 });
+
+// Owns sidebar *layout* only (collapse / reorder / resize + its persistence);
+// panel content is still rendered into #registers/#console/#diagnostics below,
+// unconditionally, even while a panel is collapsed.
+const sidebar = new PanelSidebar(el.sidebar, {
+  // A collapsed panel is display:none, so scrollHeight reads 0 and the console's
+  // scroll-to-bottom is lost; re-expanding or resizing has to re-pin it.
+  onLayoutChange: () => pinConsole(),
+});
+
+el.btnResetLayout.addEventListener('click', () => sidebar.reset());
 
 // ---- app state ----
 interface AppState {
@@ -229,6 +243,12 @@ function renderFlags(snap: Snapshot): void {
 
 function renderConsole(snap: Snapshot): void {
   el.console.textContent = snap.console;
+  pinConsole();
+}
+
+/** Keep the console scrolled to its newest output. Shared with the sidebar, which
+ *  re-pins after a collapse/expand or resize changes the console's height. */
+function pinConsole(): void {
   el.console.scrollTop = el.console.scrollHeight;
 }
 

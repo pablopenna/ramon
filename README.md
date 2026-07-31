@@ -177,6 +177,13 @@ diagnostics panels, with the current source line highlighted as you step. The
 editor seeds with the `Hi\n` write+exit program, so Run prints output and Step
 demonstrates the highlight immediately.
 
+The sidebar panels are collapsible (click a header), reorderable (drag the ⠿
+grip, or use ▲/▼) and resizable (drag a splitter; arrow keys resize a focused
+splitter, double-click evens the pair). `↺` restores the defaults. The layout is
+remembered in `localStorage` under `ramon.layout.v1` — a corrupt or missing
+value simply falls back to the defaults, and blocked storage (Safari private
+mode) degrades to a working, non-persistent sidebar.
+
 ---
 
 ## Phase 1 — toolchain validation spike

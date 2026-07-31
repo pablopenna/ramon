@@ -62,6 +62,7 @@ worker uses.
 | `src/worker/emulator.worker.ts` | browser worker = thin protocol transport over the harness |
 | `index.html` + `src/main.ts` | **Phase 2 UI** — toolbar, panels, worker plumbing, wall-clock guard |
 | `src/ui/editor.ts` | CodeMirror 6 wrapper + current-line highlight |
+| `src/ui/panels.ts` | sidebar layout — collapse/reorder/resize + `localStorage` (`ramon.layout.v1`) |
 | `src/style.css` | UI styling |
 | `scripts/headless-proof.ts` | the Node proof (`npm run proof`) |
 | `public/vendor/*` | the vendored engines, served as static assets |
@@ -94,6 +95,13 @@ Delivered: CodeMirror editor (`src/ui/editor.ts`), Assemble/Run/Step/Reset toolb
 register panel (hex + changed-register highlight), NZCV flags, cumulative console,
 diagnostics, inline assemble errors, current-line highlight, and the wall-clock
 guard. The editor seeds with the proof's `Hi\n` write+exit program.
+
+The three sidebar panels are collapsible (click the header), reorderable (grip
+drag or ▲/▼) and resizable (drag the splitter between two expanded panels;
+arrow keys work too, double-click evens the pair). `↺` in the sidebar bar
+restores the defaults. Layout persists in `localStorage['ramon.layout.v1']`;
+`src/ui/panels.ts` discovers panels from `[data-panel]` + `data-default-weight`
+in the markup, so adding a panel needs no code change.
 
 ### How to run / re-verify
 - `npm run dev` → open the printed URL. Default program: Assemble → Run prints

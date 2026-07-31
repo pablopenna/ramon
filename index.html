@@ -33,20 +33,75 @@
         <div id="editor"></div>
       </section>
 
+      <!-- The panels are collapsible / reorderable / resizable; src/ui/panels.ts
+           discovers them from [data-panel] and reads their defaults off
+           data-default-weight, so adding a panel here needs no code change. -->
       <aside class="right">
-        <section class="panel flex-grow">
-          <h2>Registers</h2>
-          <div id="registers"></div>
-          <div id="flags"></div>
-        </section>
-        <section class="panel flex-grow">
-          <h2>Console</h2>
-          <pre id="console"></pre>
-        </section>
-        <section class="panel">
-          <h2>Diagnostics</h2>
-          <div id="diagnostics"></div>
-        </section>
+        <div class="sidebar-bar">
+          <span>Panels</span>
+          <button id="btn-reset-layout" type="button" title="Reset panel layout" aria-label="Reset panel layout">↺</button>
+        </div>
+
+        <div id="sidebar" class="panel-stack">
+          <section class="panel" data-panel="registers" data-default-weight="3">
+            <h2 class="panel-header">
+              <span class="panel-grip" aria-hidden="true">⠿</span>
+              <button
+                type="button"
+                class="panel-toggle"
+                id="toggle-registers"
+                aria-expanded="true"
+                aria-controls="body-registers"
+              >
+                Registers
+              </button>
+              <button type="button" class="panel-move" data-move="up" aria-label="Move Registers up">▲</button>
+              <button type="button" class="panel-move" data-move="down" aria-label="Move Registers down">▼</button>
+            </h2>
+            <div class="panel-body" id="body-registers" role="region" aria-labelledby="toggle-registers">
+              <div id="registers"></div>
+            </div>
+            <!-- Pinned below the scrolling grid: it summarises current state, so it
+                 must not scroll away. Styled by .panel-footer, never by #flags. -->
+            <div class="panel-footer" id="flags"></div>
+          </section>
+
+          <section class="panel" data-panel="console" data-default-weight="3">
+            <h2 class="panel-header">
+              <span class="panel-grip" aria-hidden="true">⠿</span>
+              <button
+                type="button"
+                class="panel-toggle"
+                id="toggle-console"
+                aria-expanded="true"
+                aria-controls="console"
+              >
+                Console
+              </button>
+              <button type="button" class="panel-move" data-move="up" aria-label="Move Console up">▲</button>
+              <button type="button" class="panel-move" data-move="down" aria-label="Move Console down">▼</button>
+            </h2>
+            <pre class="panel-body" id="console" role="region" aria-labelledby="toggle-console"></pre>
+          </section>
+
+          <section class="panel" data-panel="diagnostics" data-default-weight="1">
+            <h2 class="panel-header">
+              <span class="panel-grip" aria-hidden="true">⠿</span>
+              <button
+                type="button"
+                class="panel-toggle"
+                id="toggle-diagnostics"
+                aria-expanded="true"
+                aria-controls="diagnostics"
+              >
+                Diagnostics
+              </button>
+              <button type="button" class="panel-move" data-move="up" aria-label="Move Diagnostics up">▲</button>
+              <button type="button" class="panel-move" data-move="down" aria-label="Move Diagnostics down">▼</button>
+            </h2>
+            <div class="panel-body" id="diagnostics" role="region" aria-labelledby="toggle-diagnostics"></div>
+          </section>
+        </div>
       </aside>
     </main>
 
