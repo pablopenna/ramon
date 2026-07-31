@@ -200,7 +200,11 @@ Everything, including the editor, is a panel. There are three zones:
   dock. An empty dock appears as a dashed drop strip while you drag.
 - **Reorder** — drag the grip, or use ▲/▼ (◀/▶ in the bottom dock).
 - **Collapse** — click a header. In the bottom dock a collapsed panel becomes a
-  narrow vertical title strip.
+  narrow vertical title strip. When *every* panel in a dock is collapsed the dock
+  stops honouring its fraction and shrinks to its headers — a strip of upright
+  title chips along the bottom, or a narrow column of them on the right — and its
+  splitter hides, since there is nothing left to resize. The fraction is kept, so
+  expanding anything puts the dock back at the size you left it.
 - **Resize** — drag any splitter, between two panels or between a dock and the main
   zone. Arrow keys resize a focused splitter; double-click evens a panel pair, or
   restores a dock to its default size.

@@ -9,6 +9,7 @@
 // exception or a blank screen).
 
 import {
+  allCollapsed,
   defaultLayout,
   deserialize,
   mainPanel,
@@ -69,6 +70,37 @@ eq('defaults: right dock', ids(DEFAULTS.panels, 'right'), ['registers', 'console
 eq('defaults: bottom dock is empty', ids(DEFAULTS.panels, 'bottom'), []);
 eq('defaults: fractions', DEFAULTS.zones, { right: 0.25, bottom: 0.3 });
 checkInvariant('defaults', DEFAULTS.panels);
+
+// ---- the all-collapsed query ------------------------------------------------
+// Derived, never persisted: it is what tells panels.ts a dock should stop
+// honouring its fraction and shrink to a strip of headers.
+
+{
+  const collapse = (panels: readonly PanelState[], ...ids: string[]): PanelState[] =>
+    panels.map((p) => (ids.includes(p.id) ? { ...p, collapsed: true } : p));
+
+  check('allCollapsed: an empty dock is false, not vacuously true', !allCollapsed(DEFAULTS.panels, 'bottom'));
+  check('allCollapsed: nothing collapsed', !allCollapsed(DEFAULTS.panels, 'right'));
+  check(
+    'allCollapsed: some but not all collapsed',
+    !allCollapsed(collapse(DEFAULTS.panels, 'registers', 'console'), 'right'),
+  );
+  const all = collapse(DEFAULTS.panels, 'registers', 'console', 'diagnostics');
+  check('allCollapsed: every panel collapsed', allCollapsed(all, 'right'));
+  check('allCollapsed: main is never a strip', !allCollapsed(all, 'main'));
+  check(
+    'allCollapsed: draining the dock makes it empty, not a strip',
+    !allCollapsed(moveTo(moveTo(moveTo(all, 'registers', 'bottom', 0), 'console', 'bottom', 1), 'diagnostics', 'bottom', 2), 'right'),
+  );
+  check(
+    'allCollapsed: the panels stay collapsed in their new dock',
+    allCollapsed(moveTo(moveTo(moveTo(all, 'registers', 'bottom', 0), 'console', 'bottom', 1), 'diagnostics', 'bottom', 2), 'bottom'),
+  );
+  check(
+    'allCollapsed: promoting out of a fully collapsed dock un-collapses',
+    !allCollapsed(promote(all, 'console'), 'right'),
+  );
+}
 
 // ---- reordering within a dock ---------------------------------------------
 

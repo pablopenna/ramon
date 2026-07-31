@@ -22,6 +22,7 @@
 // saved on a big monitor restores sensibly on a small one.
 
 import {
+  allCollapsed,
   clampFraction,
   clampWeight,
   defaultLayout,
@@ -135,9 +136,12 @@ export class PanelDock {
     const discovered = this.discover();
     this.defaults = defaultLayout(discovered, readDefaultFractions(el));
     this.layout = mutable(deserialize(this.read(), this.defaults));
+    // Before the first render, not after: render() hides the seam of a dock that
+    // is empty or all-collapsed, and it can only do that once zoneSplitters has
+    // the elements. Binding needs nothing render() produces.
+    this.bindZoneSplitters();
     this.render();
     this.bindPanels();
-    this.bindZoneSplitters();
   }
 
   // ---- public API ----
@@ -303,6 +307,14 @@ export class PanelDock {
     const empty = list.length === 0;
     this.el[zone].classList.toggle('is-empty', empty);
     this.zoneSplitters.get(zone)?.classList.toggle('is-empty', empty);
+
+    // A dock with nothing left but collapsed panels stops honouring its fraction
+    // and shrinks to its headers; its seam goes too, since an auto-sized dock
+    // gives it nothing to drag. The fraction itself is untouched, so expanding
+    // any panel puts the dock straight back at the size the user left it.
+    const strip = allCollapsed(this.layout.panels, zone);
+    this.el[zone].classList.toggle('is-strip', strip);
+    this.zoneSplitters.get(zone)?.classList.toggle('is-strip', strip);
   }
 
   private splitterFor(zone: DockId, above: PanelState, below: PanelState): HTMLElement {

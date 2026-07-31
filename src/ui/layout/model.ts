@@ -69,6 +69,15 @@ export function panelsIn(panels: readonly PanelState[], zone: ZoneId): PanelStat
   return panels.filter((p) => p.zone === zone);
 }
 
+/** A dock that holds panels but has every one of them collapsed — the state where
+ *  it stops honouring its fraction and shrinks to its headers. An *empty* dock is
+ *  false: it disappears instead, which is the opposite treatment. Never true for
+ *  'main', whose panel is never collapsed. */
+export function allCollapsed(panels: readonly PanelState[], zone: ZoneId): boolean {
+  const list = panelsIn(panels, zone);
+  return list.length > 0 && list.every((p) => p.collapsed);
+}
+
 /** The main panel. Every layout this module returns has exactly one. */
 export function mainPanel(panels: readonly PanelState[]): PanelState | undefined {
   return panels.find((p) => p.zone === 'main');

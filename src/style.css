@@ -204,6 +204,40 @@ body.is-dragging-panel #zone-bottom.is-empty {
   height: 3rem;
 }
 
+/* A dock holding nothing but collapsed panels drops its fraction and shrinks to
+   its headers — a strip of title chips. Nothing here resizes the main zone: it
+   is `flex: 1 1 0`, so it takes the reclaimed space on its own. The zone
+   splitter is hidden with it (an auto-sized dock gives it nothing to drag), and
+   the border replaces the 1px seam that splitter was drawing. */
+#zone-bottom.is-strip {
+  height: auto;
+  /* Never an x-scrollbar here: at height:auto it would be laid inside the
+     content box and clip the headers. Wrap to a second row instead. */
+  flex-wrap: wrap;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+#zone-right.is-strip {
+  width: auto;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+}
+
+.panel-splitter.is-strip {
+  display: none;
+}
+
+/* Same reasoning as the empty dock above: a one-header-thin strip is a hard
+   thing to drop onto, so it thickens for the duration of the drag. */
+body.is-dragging-panel #zone-bottom.is-strip {
+  height: 3rem;
+}
+
+body.is-dragging-panel #zone-right.is-strip {
+  width: 4rem;
+}
+
 /* Dropping on the main zone promotes, so — unlike a dock, which reorders live
    under the pointer — it needs its own cue that a release here would land. */
 .zone-main.is-drop-target {
@@ -306,8 +340,10 @@ body.is-dragging-panel #zone-bottom.is-empty {
 }
 
 /* Collapsed in a horizontal dock: the header turns on its side and becomes a
-   narrow title strip, the width equivalent of a collapsed row. */
-.panel-stack-h > .panel.is-collapsed > .panel-header {
+   narrow title strip, the width equivalent of a collapsed row. Not in a dock
+   that is *all* collapsed — there is no expanded neighbour to be narrow beside,
+   and .is-strip lays the headers out upright and left-packed instead. */
+.panel-stack-h:not(.is-strip) > .panel.is-collapsed > .panel-header {
   writing-mode: vertical-rl;
   height: 100%;
   padding: 0.5rem 0.3rem;
