@@ -15,8 +15,10 @@ export interface LoadedEngines {
   uc: UnicornNamespace;
 }
 
-/** Where the vendored engines are served from (public/vendor -> /vendor). */
-const VENDOR_BASE = '/vendor';
+/** Where the vendored engines are served from (public/vendor -> <base>/vendor).
+ *  BASE_URL is inlined at build time and always ends in a slash; it is not always
+ *  '/' (GitHub Pages serves the app under /<repo>/), so never hardcode the root. */
+const VENDOR_BASE = `${import.meta.env.BASE_URL}vendor`;
 
 /** Calling eval through a binding other than the name `eval` is *indirect*
  *  eval: it runs in global scope, so the script's top-level `var`/global
